@@ -240,12 +240,22 @@ function workerEngine(backend: Backend, onProgress: (p: { progress: number; text
   worker.onmessage = (e: MessageEvent) => {
     const m = e.data as Record<string, unknown>;
     if (m.type === "progress") return onProgress(m as unknown as { progress: number; text: string });
+    if (m.type === "error") {
+      for (const w of waiting.values()) w.fail(new Error(String(m.error || "worker error")));
+      waiting.clear();
+      return;
+    }
     const w = waiting.get(m.id as number);
     if (!w) return;
     waiting.delete(m.id as number);
     if (m.ok) w.ok(m); else w.fail(new Error(String(m.error)));
   };
-  worker.onerror = (e) => { for (const w of waiting.values()) w.fail(new Error(e.message || "worker crashed")); waiting.clear(); };
+  worker.onerror = (e) => {
+    const detail = e.message || (e.error instanceof Error ? e.error.message : "") || (e.filename ? `${e.filename}:${e.lineno}` : "");
+    const msg = detail || "worker crashed (browser GPU/memory limit)";
+    for (const w of waiting.values()) w.fail(new Error(msg));
+    waiting.clear();
+  };
   const call = (msg: Record<string, unknown>) => new Promise<Record<string, unknown>>((ok, fail) => {
     const id = ++seq;
     waiting.set(id, { ok, fail });

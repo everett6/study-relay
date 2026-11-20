@@ -7,6 +7,10 @@ import { CreateMLCEngine, hasModelInCache, type MLCEngine } from "@mlc-ai/web-ll
 
 let engine: MLCEngine | null = null;
 const post = (m: unknown) => (self as unknown as Worker).postMessage(m);
+self.addEventListener("unhandledrejection", (ev) => {
+  ev.preventDefault();
+  post({ type: "error", error: String(ev.reason || "unhandled worker rejection") });
+});
 
 self.onmessage = async (e: MessageEvent) => {
   const { id, type } = e.data as { id: number; type: string };

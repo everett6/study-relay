@@ -7,7 +7,8 @@ import { detectWebGPUConfig, generateLowVram, lowVramSessionOptions, type Cached
 
 env.allowLocalModels = false;
 if (env.backends?.onnx?.wasm) {
-  env.backends.onnx.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1;
+  env.backends.onnx.wasm.proxy = false;
+  env.backends.onnx.wasm.numThreads = 1;
 }
 let tok: PreTrainedTokenizer | null = null;
 let model: PreTrainedModel | null = null;
@@ -19,6 +20,10 @@ let maxPromptTokens = 1536;
 const prefixCache = new Map<string, { ids: number[]; state?: CachedState }>();
 const PREFIX_SLOTS = 2;
 const post = (m: unknown) => (self as unknown as Worker).postMessage(m);
+self.addEventListener("unhandledrejection", (ev) => {
+  ev.preventDefault();
+  post({ type: "error", error: String(ev.reason || "unhandled worker rejection") });
+});
 
 // combine per-file download progress into one 0..1 number
 const files = new Map<string, { loaded: number; total: number }>();

@@ -1064,7 +1064,13 @@ function openModelSheet() {
       if (llm.status.reason === "insecure" && goSecure()) return;
       if (!(await useRelayAI())) toast(llm.status.text, "warn");
     } else {
-      toast(llm.status.text, "warn");
+      const errText = llm.status.text;
+      if (m.backend !== "native" && (await useRelayAI())) {
+        syncSelection();
+        render();
+      } else {
+        toast(errText, "warn");
+      }
     }
     startBtn.disabled = think.disabled = false;
   };
