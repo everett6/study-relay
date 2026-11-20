@@ -1,0 +1,890 @@
+{
+ "model": "onnx-community/LFM3-1.7B-ONNX",
+ "thinking": false,
+ "cache": false,
+ "loadMs": 2497,
+ "commands": [
+  {
+   "set": "core",
+   "text": "I have a banquet at 7 tonight",
+   "expect": "add_event today 19:00",
+   "pass": false,
+   "appPass": true,
+   "ms": 4176,
+   "promptTokens": 1330,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Banquet",
+      "date": "2026-11-19",
+      "start": "19:00",
+      "end": null
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "{\"calls\":[{\"tool\":\"add_event\",\"args\":{\"title\":\"Banquet\",\"date\":\"2026-11-19\",\"start\":\"19:00\",\"end\":null},{\"tool\":\"move_block\",\"args\":{\"target\":\"Gatsby Chapter 5 Reading + Annotations\",\"to_date\":\"2026-11-19\",\"window\":\"evening\"}}],\"reply\":\"I've added your banquet at 7 PM tonight. Let me know if you need anything else!\"}  \n\nWait\u2014let me check: The user says \"I have a banquet at 7 tonight\". That's an event at 7 PM (19:00). I should add_event for banquet. Also, there might be a conflict: currently at 19:00-20:30 Dinner & family FIXED. But banquet is also at 7? Possibly overlapping dinner? Need to see. The plan has \"Dinner & family FIXED\" 19:00-20:30. If banquet is at 7, maybe it's the same as dinner? Or separate. The user just states having a banquet at 7 tonight. Likely they want to schedule it. We can add_event title Banquet, date 2026-11-19, start 19:00, end null? End not given. Could assume same duration? Not sure. Typically banquet could be longer. Since not specified, we set end null.\n\nAlso, we need to consider moving something? The user didn't ask to move anything. They just mention banquet. So just add_event.\n\nBut also, \"Evening words mean PM: '7 tonight' = 19:00\". So start 19:00. No end time provided. For add_event, end optional. Use null.\n\nThus calls: add_event and maybe preclear? No, just add_event.\n\nLet me construct:\n\n{\n \"calls\": [\n   {\"tool\":\""
+  },
+  {
+   "set": "core",
+   "text": "robotics practice tomorrow from 4 to 6pm",
+   "expect": "add_event Fri 16:00-18:00",
+   "pass": true,
+   "appPass": true,
+   "ms": 1369,
+   "promptTokens": 1332,
+   "calls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Robotics Practice",
+      "date": "2026-11-20",
+      "start": "16:00",
+      "end": "18:00"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Robotics Practice",
+      "date": "2026-11-20",
+      "start": "16:00",
+      "end": "18:00"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"add_event\",\"args\":{\"title\":\"Robotics Practice\",\"date\":\"2026-11-20\",\"start\":\"16:00\",\"end\":\"18:00\"}}], \"reply\":\"Added Robotics Practice for tomorrow 4\u20136\u202fPM.\"}"
+  },
+  {
+   "set": "core",
+   "text": "finish my physics problem set before 6:30 tonight",
+   "expect": "preclear PS7 today 18:30",
+   "pass": false,
+   "appPass": true,
+   "ms": 4246,
+   "promptTokens": 1332,
+   "calls": [
+    {
+     "tool": "preclear_task",
+     "args": {
+      "task_query": "AP Physics C Mech: Lab 4: Moment of Inertia",
+      "date": "2026-11-20",
+      "before": "08:30"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "preclear_task",
+     "args": {
+      "task_query": "physics problem set",
+      "date": "2026-11-19",
+      "before": "18:30"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"preclear_task\",\"args\":{\"task_query\":\"AP Physics C Mech: Problem Set 7: Rotational Dynamics\",\"date\":\"2026-11-19\",\"before\":\"16:15\"},{\"tool\":\"preclear_task\",\"args\":{\"task_query\":\"AP Physics C Mech: Lab 4: Moment of Inertia\",\"date\":\"2026-11-20\",\"before\":\"08:30\"}},{\"tool\":\"add_event\",\"args\":{\"title\":\"Physics Problem Set 7: Rotational Dynamics\",\"date\":\"2026-11-19\",\"start\":\"16:15\",\"end\":\"17:00\"},\"null:\"},{\"tool\":\"add_event\",\"args\":{\"title\":\"Physics Lab 4: Moment of Inertia\",\"date\":\"2026-11-20\",\"start\":\"08:30\",\"end\":\"10:45\"}, null:\"? Wait, need to match times. Let me check plan: Tomorrow 08:30-15:30 school fixed, then 16:15-17:00 Gatsby reading, etc. For lab, maybe 8:30-9:15? But user says finish before 6:30 tonight. So we need to schedule finishing before 18:30. Current block at 18:25-19:00 dinner. Need to move something earlier? User: \"finish my physics problem set before 6:30 tonight\". That means finish before 06:30 PM (18:30). Currently there is a block 17:10-17:55 RESEARCH goal movable, 18:05-18:50 AIME goal movable, 19:00-20:30 Dinner. We can add a study block for physics before 18:30. Also \"Problem Set 7... due tomorrow 23:59 \u00b7 55m\". It's already in plan as movable. Maybe we just need to add an event to finish before 18:"
+  },
+  {
+   "set": "core",
+   "text": "no more studying tonight after 8",
+   "expect": "cancel_study today after 20:00",
+   "pass": false,
+   "appPass": true,
+   "ms": 1349,
+   "promptTokens": 1328,
+   "calls": [
+    {
+     "tool": "cancel_study",
+     "args": {
+      "date": "2026-11-19",
+      "after": "20:30"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "cancel_study",
+     "args": {
+      "date": "2026-11-19",
+      "after": "20:00"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"cancel_study\",\"date\":\"2026-11-19\",\"after\":\"20:30\"},{\"tool\":\"move_block\",\"target\":\"study block after 8pm\",\"to_date\":\"2026-11-19\",\"window\":\"evening\"}],\"reply\":\"I'll stop studying after 8 PM tonight.\"}"
+  },
+  {
+   "set": "core",
+   "text": "bump AIME to 8 hours a week",
+   "expect": "set_bucket_target AIME 8",
+   "pass": true,
+   "appPass": true,
+   "ms": 4124,
+   "promptTokens": 1331,
+   "calls": [
+    {
+     "tool": "set_bucket_target",
+     "args": {
+      "reason": "User wants to bump AIME to 8 hours/week.",
+      "bucket": "AIME",
+      "hours": 8
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "set_bucket_target",
+     "args": {
+      "bucket": "AIME",
+      "hours": 8
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"set_bucket_target\",\"args\":{\"bucket\":\"AIME\",\"hours\":8},\"reason\":\"User wants to bump AIME to 8 hours/week.\"},{\"tool\":\"move_block\",\"args\":{\"target\":\"AIME goal\",\"to_date\":null,\"window\":\"evening\"},\"reason\":\"Move the existing AIME goal block to evening? Wait\u2014need to see current schedule. The plan shows \"20:30-21:15 AIME goal movable\". So moving it to evening would be 21:15 onward? But that seems odd. Let me think: user says \"bump AIME to 8 hours a week\". That means increase duration of AIME study. The existing block is \"20:30-21:15 AIME goal movable\". To bump hours, we might need to extend the time window. However, there's no direct \"duration\" field. The set_bucket_target sets hours per week. So just calling set_bucket_target(bucket:\"AIME\", hours:8) should do it. No need to move block. Also maybe need to adjust the time slot? The instruction: \"FIXED items... and due dates never move. KEPT blocks stay where they are.\" AIME goal is movable currently. But if we set bucket target hours, does that affect scheduling? Possibly not directly. I'll just call set_bucket_target for AIME with 8 hours. And maybe also move_block? Not needed.\n\nLet me check: The user's request: \"bump AIME to 8 hours a week\". This is a change in frequency/duration, not location. So set_bucket_target is appropriate.\n\nThus one call: set_bucket_target(bucket=\"AIME\", hours=8). Possibly also need to mark something? No.\n\nI'll produce JSON with calls array containing that single call, and reply a short f"
+  },
+  {
+   "set": "core",
+   "text": "move my ACT prep to saturday morning",
+   "expect": "move_block ACT Sat morning",
+   "pass": false,
+   "appPass": true,
+   "ms": 1966,
+   "promptTokens": 1329,
+   "calls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "20:30-21:15 AIME goal",
+      "to_date": "2026-11-21"
+     }
+    },
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "20:30-21:15 USAAIO goal",
+      "to_date": "2026-11-21"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "ACT",
+      "to_date": "2026-11-21",
+      "window": "morning"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<tool_call>\n<function=move_block>\n<parameter=target>\n20:30-21:15 AIME goal\n</parameter>\n<parameter=to_date>\n2026-11-21\n</parameter>\n</function>\n</tool_call>\n\n<tool_call>\n<function=move_block>\n<parameter=target>\n20:30-21:15 USAAIO goal\n</parameter>\n<parameter=to_date>\n2026-11-21\n</parameter>\n</function>\n</tool_call>"
+  },
+  {
+   "set": "core",
+   "text": "the calc homework will take like an hour and a half",
+   "expect": "set_estimate HW 6.3 90",
+   "pass": true,
+   "appPass": true,
+   "ms": 2585,
+   "promptTokens": 1332,
+   "calls": [
+    {
+     "tool": "set_estimate",
+     "args": {
+      "task_query": "AP Calculus BC: HW 6.3 Integration by Parts",
+      "minutes": "90"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "set_estimate",
+     "args": {
+      "task_query": "calc homework",
+      "minutes": 90
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<tool_call>\n<function=set_estimate>\n<parameter=task_query>\nAP Calculus BC: HW 6.3 Integration by Parts\n</parameter>\n<parameter=minutes>\n90\n</parameter>\n</function>\n</tool_call>"
+  },
+  {
+   "set": "core",
+   "text": "the moment of inertia lab is brutal, difficulty 5",
+   "expect": "set_load Lab 4 = 5",
+   "pass": true,
+   "appPass": true,
+   "ms": 1699,
+   "promptTokens": 1332,
+   "calls": [
+    {
+     "tool": "set_load",
+     "args": {
+      "task_query": "AP Physics C Mech: Lab 4: Moment of Inertia",
+      "cognitive_load": "5"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "set_load",
+     "args": {
+      "task_query": "AP Physics C Mech: Lab 4: Moment of Inertia",
+      "cognitive_load": "5"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<tool_call>\n<function=set_load>\n<parameter=task_query>\nAP Physics C Mech: Lab 4: Moment of Inertia\n</parameter>\n<parameter=cognitive_load>\n5\n</parameter>\n</function>\n</tool_call>"
+  },
+  {
+   "set": "core",
+   "text": "I already turned in the stoichiometry quiz",
+   "expect": "mark_done Stoich quiz",
+   "pass": true,
+   "appPass": true,
+   "ms": 1116,
+   "promptTokens": 1329,
+   "calls": [
+    {
+     "tool": "mark_done",
+     "args": {
+      "task_query": "Chemistry H: Stoichiometry Quiz"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "mark_done",
+     "args": {
+      "task_query": "stoichiometry quiz"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"mark_done\",\"args\":{\"task_query\":\"Chemistry H: Stoichiometry Quiz\"}}], \"reply\":\"Great job! I've marked the chemistry quiz as done.\"}"
+  },
+  {
+   "set": "core",
+   "text": "what's my grade in chem right now?",
+   "expect": "ask_canvas grades chem",
+   "pass": true,
+   "appPass": true,
+   "ms": 1967,
+   "promptTokens": 1330,
+   "calls": [
+    {
+     "tool": "ask_canvas",
+     "args": {
+      "what": "grades",
+      "course": "Chemistry H: Stoichiometry Quiz"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "ask_canvas",
+     "args": {
+      "what": "grades",
+      "course": "chem",
+      "search": null
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"ask_canvas\",\"args\":{\"what\":\"grades\",\"course\":\"Chemistry H: Stoichiometry Quiz\"}}], \"reply\":\"I'll check your grade in Chemistry H: Stoichiometry Quiz.\"}"
+  },
+  {
+   "set": "core",
+   "text": "do I have any missing assignments in calc?",
+   "expect": "ask_canvas assignments calc",
+   "pass": true,
+   "appPass": true,
+   "ms": 1176,
+   "promptTokens": 1330,
+   "calls": [
+    {
+     "tool": "ask_canvas",
+     "args": {
+      "what": "assignments",
+      "course": "AP Calculus BC"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "ask_canvas",
+     "args": {
+      "what": "assignments",
+      "course": "calc",
+      "search": "missing"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"ask_canvas\",\"args\":{\"what\":\"assignments\",\"course\":\"AP Calculus BC\"}}], \"reply\":\"I'll check your Canvas for any missing AP Calculus BC assignments.\"}"
+  },
+  {
+   "set": "core",
+   "text": "start a focus session on my research",
+   "expect": "timer start RESEARCH",
+   "pass": false,
+   "appPass": true,
+   "ms": 1253,
+   "promptTokens": 1328,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "timer",
+     "args": {
+      "action": "start",
+      "target": "RESEARCH"
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "{\"calls\":[{\"tool\":\"add_event\",\"args\":{\"title\":\"Research goal\",\"date\":\"2026-11-20\",\"start\":\"17:10\",\"end\":\"18:00\"}}], \"reply\":\"I'll start your research focus session now.\"}"
+  },
+  {
+   "set": "core",
+   "text": "pause the timer",
+   "expect": "timer pause",
+   "pass": true,
+   "appPass": true,
+   "ms": 1197,
+   "promptTokens": 1324,
+   "calls": [
+    {
+     "tool": "timer",
+     "args": {
+      "action": "pause",
+      "target": null
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "timer",
+     "args": {
+      "action": "pause",
+      "target": null
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"timer\",\"args\":{\"action\":\"pause\",\"target\":null}},{\"tool\":\"timer\",\"args\":{\"action\":\"resume\",\"target\":null}],\"reply\":\"Timer paused for you.\"}]"
+  },
+  {
+   "set": "core",
+   "text": "email my college counselor asking to meet next week",
+   "expect": "draft_email to counselor, no made-up address",
+   "pass": true,
+   "appPass": true,
+   "ms": 1531,
+   "promptTokens": 1330,
+   "calls": [
+    {
+     "tool": "draft_email",
+     "args": {
+      "to": "counselor",
+      "subject": "Meeting request",
+      "body": "Hi, I'd like to schedule a meeting next week. Please let me know your availability.",
+      "reason": "Ask to meet with college counselor next week"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "draft_email",
+     "args": {
+      "to": "college counselor",
+      "subject": "To meet next week",
+      "reason": "you asked to email college counselor",
+      "body": "Hi,\n\nI wanted to reach out about to meet next week.\n\nThank you,\n"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"draft_email\",\"args\":{\"to\":\"counselor\",\"subject\":\"Meeting request\",\"body\":\"Hi, I'd like to schedule a meeting next week. Please let me know your availability.\",\"reason\":\"Ask to meet with college counselor next week\"}}],\"reply\":\"I've drafted an email to the counselor requesting a meeting next week. Let me know if you need anything else!\"}"
+  },
+  {
+   "set": "core",
+   "text": "ugh I'm so burnt out today",
+   "expect": "check_in mood <= 2",
+   "pass": false,
+   "appPass": true,
+   "ms": 1459,
+   "promptTokens": 1328,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "check_in",
+     "args": {
+      "mood": 1
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "{\"calls\":[{\"tool\":\"check_in\",\"args\":{\"mood\":5},{\"tool\":\"timer\",\"args\":{\"action\":\"pause\",\"target\":null}},{\"tool\":\"mark_done\",\"args\":{\"task_query\":\"Check-in: feeling burnt out today\"}}],\"reply\":\"I hear you\u2014take a breather! You've got school plans still ahead, but maybe step away for a few minutes first.\"}"
+  },
+  {
+   "set": "core",
+   "text": "honestly today was great, I feel super motivated",
+   "expect": "check_in mood >= 4",
+   "pass": false,
+   "appPass": true,
+   "ms": 974,
+   "promptTokens": 1332,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "check_in",
+     "args": {
+      "mood": 5
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "{\"calls\":[],\"reply\":\"That's awesome! Keep that energy going\u2014you've got a lot ahead today!\"}"
+  },
+  {
+   "set": "core",
+   "text": "I have debate at 6 tonight so get the gatsby reading done before then",
+   "expect": "add_event today 18:00 + preclear Gatsby 18:00",
+   "pass": false,
+   "appPass": true,
+   "ms": 1726,
+   "promptTokens": 1338,
+   "calls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Gatsby Chapter 5 Reading + Annotations",
+      "date": "2026-11-19",
+      "start": "18:25",
+      "end": "19:00"
+     }
+    },
+    {
+     "tool": "preclear_task",
+     "args": {
+      "task_query": "American Literature H: Gatsby Chapter 5 Reading + Annotations",
+      "date": "2026-11-19",
+      "before": "18:25"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Debate",
+      "date": "2026-11-19",
+      "start": "18:00",
+      "end": null
+     }
+    },
+    {
+     "tool": "preclear_task",
+     "args": {
+      "task_query": "the gatsby reading",
+      "date": "2026-11-19",
+      "before": "18:00"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<tool_call>\n<function=add_event>\n<parameter=title>\nGatsby Chapter 5 Reading + Annotations\n</parameter>\n<parameter=date>\n2026-11-19\n</parameter>\n<parameter=start>\n18:25\n</parameter>\n<parameter=end>\n19:00\n</parameter>\n</function>\n</tool_call>\n\n<tool_call>\n<function=preclear_task>\n<parameter=task_query>\nAmerican Literature H: Gatsby Chapter 5 Reading + Annotations\n</parameter>\n<parameter=date>\n2026-11-19\n</parameter>\n<parameter=before>\n18:25\n</parameter>\n</function>\n</tool_call>"
+  },
+  {
+   "set": "core",
+   "text": "push my USAAIO block to sunday afternoon and set the physics goal to 4 hours",
+   "expect": "move_block USAAIO Sun afternoon + PHYSICS 4",
+   "pass": false,
+   "appPass": true,
+   "ms": 1370,
+   "promptTokens": 1341,
+   "calls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "USAAIO goal",
+      "to_date": "2026-11-22",
+      "window": "afternoon"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "USAAIO",
+      "to_date": "2026-11-22",
+      "window": "afternoon"
+     }
+    },
+    {
+     "tool": "set_bucket_target",
+     "args": {
+      "bucket": "PHYSICS",
+      "hours": 4
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<tool_call>\n<function=move_block>\n<parameter=target>\nUSAAIO goal\n</parameter>\n<parameter=to_date>\n2026-11-22\n</parameter>\n<parameter=window>\nafternoon\n</parameter>\n</function>\n</tool_call>\n\n<tool_call>\n<function=set_estimate>\n<parameter=task_query>\nphysics goal\n</parameter>\n<parameter=minutes>\n4\n</parameter>\n</function>\n</tool_call>"
+  },
+  {
+   "set": "core",
+   "text": "any new announcements in english?",
+   "expect": "ask_canvas announcements english",
+   "pass": false,
+   "appPass": true,
+   "ms": 1210,
+   "promptTokens": 1328,
+   "calls": [
+    {
+     "tool": "ask_canvas",
+     "args": {
+      "what": "announcements",
+      "course": "none"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "ask_canvas",
+     "args": {
+      "what": "announcements",
+      "course": "english",
+      "search": null
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"ask_canvas\",\"args\":{\"what\":\"announcements\",\"course\":\"none\"}}],\"reply\":\"I'll check for any new English announcements right away!\"}"
+  },
+  {
+   "set": "core",
+   "text": "I'm going to a concert saturday 7 to 10pm",
+   "expect": "add_event Sat 19:00-22:00",
+   "pass": true,
+   "appPass": true,
+   "ms": 1168,
+   "promptTokens": 1335,
+   "calls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Concert",
+      "date": "2026-11-21",
+      "start": "19:00",
+      "end": "22:00"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Concert",
+      "date": "2026-11-21",
+      "start": "19:00",
+      "end": "22:00"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<tool_call>\n<function=add_event>\n<parameter=title>\nConcert\n</parameter>\n<parameter=date>\n2026-11-21\n</parameter>\n<parameter=start>\n19:00\n</parameter>\n<parameter=end>\n22:00\n</parameter>\n</function>\n</tool_call>"
+  },
+  {
+   "set": "keep",
+   "text": "keep my AIME block tonight but move research to saturday afternoon",
+   "expect": "keep_block AIME + move_block RESEARCH Sat afternoon",
+   "pass": true,
+   "appPass": true,
+   "ms": 1456,
+   "promptTokens": 1334,
+   "calls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "RESEARCH goal",
+      "to_date": "2026-11-21",
+      "window": "afternoon"
+     }
+    },
+    {
+     "tool": "keep_block",
+     "args": {
+      "target": "AIME goal",
+      "date": "2026-11-19"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "keep_block",
+     "args": {
+      "target": "AIME",
+      "date": "2026-11-19"
+     }
+    },
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "RESEARCH",
+      "to_date": "2026-11-21",
+      "window": "afternoon"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"RESEARCH goal\",\"to_date\":\"2026-11-21\",\"window\":\"afternoon\"}},{\"tool\":\"keep_block\",\"args\":{\"target\":\"AIME goal\",\"date\":\"2026-11-19\"}}],\"reply\":\"I'll keep your AIME block tonight and move the Research goal to Saturday afternoon.\"}"
+  },
+  {
+   "set": "keep",
+   "text": "don't move the calc homework, it has to get done today",
+   "expect": "keep_block HW 6.3, nothing moved",
+   "pass": false,
+   "appPass": true,
+   "ms": 1288,
+   "promptTokens": 1334,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "keep_block",
+     "args": {
+      "target": "calc homework",
+      "date": null
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"HW 6.3 Integration by Parts\",\"to_date\":\"2026-11-19\",\"window\":\"morning\"}}],\"reply\":\"Got it\u2014your AP Calculus BC HW 6.3 stays put for today.\"}"
+  },
+  {
+   "set": "keep",
+   "text": "dentist appointment tomorrow 4 to 5, keep everything else the same",
+   "expect": "add_event Fri 16:00-17:00 only",
+   "pass": true,
+   "appPass": true,
+   "ms": 1315,
+   "promptTokens": 1336,
+   "calls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Dentist appointment",
+      "date": "2026-11-20",
+      "start": "16:00",
+      "end": "17:00"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Dentist Appointment",
+      "date": "2026-11-20",
+      "start": "16:00",
+      "end": "17:00"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "{\"calls\":[{\"tool\":\"add_event\",\"args\":{\"title\":\"Dentist appointment\",\"date\":\"2026-11-20\",\"start\":\"16:00\",\"end\":\"17:00\"}},\"reply\":\"I've added your dentist appointment tomorrow from 4\u20135\u202fPM. Everything else stays as planned.\"}"
+  },
+  {
+   "set": "keep",
+   "text": "move the gatsby reading to tomorrow evening and leave the physics lab where it is",
+   "expect": "move_block Gatsby Fri evening + keep_block Lab 4",
+   "pass": true,
+   "appPass": true,
+   "ms": 1562,
+   "promptTokens": 1338,
+   "calls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "Gatsby Chapter 5 Reading + Annotations",
+      "to_date": "2026-11-20",
+      "window": "evening"
+     }
+    },
+    {
+     "tool": "keep_block",
+     "args": {
+      "target": "AP Physics C Mech: Lab 4: Moment of Inertia"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "the gatsby reading",
+      "to_date": "2026-11-20",
+      "window": "evening"
+     }
+    },
+    {
+     "tool": "keep_block",
+     "args": {
+      "target": "physics lab",
+      "date": null
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<tool_call>\n<function=move_block>\n<parameter=target>\nGatsby Chapter 5 Reading + Annotations\n</parameter>\n<parameter=to_date>\n2026-11-20\n</parameter>\n<parameter=window>\nevening\n</parameter>\n</function>\n</tool_call>\n\n<tool_call>\n<function=keep_block>\n<parameter=target>\nAP Physics C Mech: Lab 4: Moment of Inertia\n</parameter>\n</function>\n</tool_call>"
+  }
+ ],
+ "estimates": [
+  {
+   "id": "canvas-9001",
+   "title": "Problem Set 7: Rotational Dynamics",
+   "minutes": 90,
+   "type": "HW",
+   "load": 3,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 292,
+   "raw": "```json\n{\"task_type\":\"HW\",\"cognitive_load\":3,\"minutes\":90,\"confidence\":0.85}\n```"
+  },
+  {
+   "id": "canvas-9002",
+   "title": "Lab 4: Moment of Inertia",
+   "minutes": 90,
+   "type": "Lab",
+   "load": 3,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 395,
+   "raw": "```json\n{\n  \"task_type\": \"Lab\",\n  \"cognitive_load\": 3,\n  \"minutes\": 90,\n  \"confidence\": 0.85\n}\n```"
+  },
+  {
+   "id": "canvas-9003",
+   "title": "HW 6.3 Integration by Parts",
+   "minutes": 60,
+   "type": "HW",
+   "load": 2,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 375,
+   "raw": "{\n  \"task_type\": \"HW\",\n  \"cognitive_load\": 2,\n  \"minutes\": 60,\n  \"confidence\": 0.9\n}\n```"
+  },
+  {
+   "id": "canvas-9004",
+   "title": "Unit 6 Test",
+   "minutes": 90,
+   "type": "Exam",
+   "load": 4,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 359,
+   "raw": "{\n  \"task_type\": \"Test\",\n  \"cognitive_load\": 4,\n  \"minutes\": 90,\n  \"confidence\": 0.85\n}"
+  },
+  {
+   "id": "canvas-9005",
+   "title": "Gatsby Chapter 5 Reading + Annotations",
+   "minutes": 45,
+   "type": "HW",
+   "load": 2,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 369,
+   "raw": "{\n  \"task_type\": \"HW\",\n  \"cognitive_load\": 2,\n  \"minutes\": 45,\n  \"confidence\": 0.9\n}\n```"
+  },
+  {
+   "id": "canvas-9006",
+   "title": "Essay Draft: The American Dream",
+   "minutes": 90,
+   "type": "Project",
+   "load": 2,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 259,
+   "raw": "{\"task_type\":\"Project\",\"cognitive_load\":2,\"minutes\":90,\"confidence\":0.85}"
+  },
+  {
+   "id": "canvas-9007",
+   "title": "Stoichiometry Quiz",
+   "minutes": 30,
+   "type": "Quiz",
+   "load": 2,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 360,
+   "raw": "{\n  \"task_type\": \"Quiz\",\n  \"cognitive_load\": 2,\n  \"minutes\": 30,\n  \"confidence\": 0.9\n}"
+  }
+ ],
+ "extracts": [
+  {
+   "got": 3,
+   "of": 3,
+   "found": [
+    {
+     "title": "AP Physics C",
+     "course": "",
+     "due": "2026-11-24T23:59",
+     "kind": "task",
+     "minutes": null
+    },
+    {
+     "title": "Problem Set 8",
+     "course": "",
+     "due": "2026-11-24T23:59",
+     "kind": "task",
+     "minutes": null
+    },
+    {
+     "title": "AP Calculus BC",
+     "course": "",
+     "due": "2026-11-23T08:30",
+     "kind": "task",
+     "minutes": null
+    },
+    {
+     "title": "Quiz 6.4",
+     "course": "",
+     "due": "2026-11-23T08:30",
+     "kind": "task",
+     "minutes": null
+    },
+    {
+     "title": "Robotics meeting",
+     "course": "",
+     "due": "2026-11-20T15:45",
+     "kind": "event",
+     "minutes": null
+    }
+   ],
+   "ms": 1886,
+   "raw": "{\n \"items\": [\n  {\n    \"title\": \"AP Physics C\",\n    \"due\": \"2026-11-24T23:59:00\",\n    \"kind\": \"task\"\n  },\n  {\n    \"title\": \"Problem Set 8\",\n    \"due\": \"2026-11-24T23:59:00\",\n    \"kind\": \"task\"\n  },\n  {\n    \"title\": \"AP Calculus BC\",\n    \"due\": \"2026-11-23T08:30:00\",\n    \"kind\": \"task\"\n  },\n  {\n    \"title\": \"Quiz 6.4\",\n    \"due\": \"2026-11-23T08:30:00\",\n    \"kind\": \"task\"\n  },\n  {\n    \"title\": \"Robotics meeting\",\n    \"due\": \"2026-11-20T15:45:00\",\n    \"kind\": \"event\"\n  }\n ]\n}\n```"
+  },
+  {
+   "got": 0,
+   "of": 2,
+   "found": [],
+   "ms": 1020,
+   "raw": "{\n \"items\": [\n  {\n    \"title\": \"\",\n    \"course\": \"\",\n    \"due\": \"2026-11-22T21:00\",\n    \"kind\": \"task\",\n    \"minutes\": null\n  },\n  {\n    \"title\": \"\",\n    \"course\": \"\",\n    \"due\": \"2026-11-21T10:00\",\n    \"kind\": \"task\",\n    \"minutes\": null\n  }\n ]\n}"
+  }
+ ]
+}

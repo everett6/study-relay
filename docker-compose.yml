@@ -1,0 +1,17 @@
+services:
+  study-relay:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"   # change to "8000:8000" to reach it from other devices (a token is required then)
+    environment:
+      - RELAY_DB=/data/study-relay.db
+      - TZ_NAME=${TZ_NAME:-America/Los_Angeles}
+      - RELAY_TOKEN=${RELAY_TOKEN:-}   # empty: one is generated in /data/relay-token (docker compose exec study-relay /study-relay pair)
+      - CANVAS_BASE_URL=${CANVAS_BASE_URL:-https://esuhsd.instructure.com}
+      - CANVAS_API_TOKEN=${CANVAS_API_TOKEN:-}
+    volumes:
+      - study_data:/data
+
+volumes:
+  study_data:

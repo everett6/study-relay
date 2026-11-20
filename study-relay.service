@@ -1,0 +1,56 @@
+# /etc/systemd/system/study-relay.service
+#   sudo cp study-relay-arm64 /opt/study-relay/study-relay
+#   sudo cp study-relay.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now study-relay
+[Unit]
+Description=Study Relay (adaptive study planner + MCP server)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=study
+Group=study
+WorkingDirectory=/opt/study-relay
+ExecStart=/opt/study-relay/study-relay
+# CANVAS_API_TOKEN, RELAY_TOKEN, DISCORD_*, IMAP_*, SMTP_* live here (chmod 600, owned by study)
+EnvironmentFile=-/opt/study-relay/.env
+# Tailscale serve proxies to localhost, so the relay only needs to listen there.
+Environment=RELAY_ADDR=127.0.0.1:8000
+Environment=RELAY_DB=/var/lib/study-relay/study.db
+Environment=TZ_NAME=America/Los_Angeles
+Environment=GOMEMLIMIT=20MiB
+Environment=GOMAXPROCS=1
+StateDirectory=study-relay
+Restart=on-failure
+RestartSec=3
+
+# resource limits (the process itself idles well under 30 MB)
+MemoryMax=120M
+MemoryHigh=80M
+CPUQuota=25%
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=idle
+Nice=19
+AllowedCPUs=3
+TasksMax=64
+
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/study-relay
+
+[Install]
+WantedBy=multi-user.target

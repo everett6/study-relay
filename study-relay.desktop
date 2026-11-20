@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Study Flow
+Comment=Adaptive Study Planner, Competition Coach & Native LFM
+Exec=/home/everett/TimeTracker/study-relay/study-relay-app.sh
+Terminal=false
+Categories=Education;Utility;
+StartupWMClass=127.0.0.1

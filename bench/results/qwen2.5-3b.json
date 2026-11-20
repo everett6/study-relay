@@ -1,0 +1,839 @@
+{
+ "model": "Qwen2.5-3B-Instruct-q4f16_1-MLC",
+ "thinking": false,
+ "cache": true,
+ "loadMs": 3386,
+ "commands": [
+  {
+   "set": "core",
+   "text": "I have a banquet at 7 tonight",
+   "expect": "add_event today 19:00",
+   "pass": false,
+   "appPass": true,
+   "ms": 2934,
+   "promptTokens": 1468,
+   "calls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Banquet",
+      "date": "2026-11-21",
+      "start": "19:00"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Banquet",
+      "date": "2026-11-19",
+      "start": "19:00",
+      "end": null
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"add_event\",\"args\":{\"title\":\"Banquet\",\"date\":\"2026-11-21\",\"start\":\"19:00\"}}],\"reply\":\"Banquet event added to your schedule.\"}"
+  },
+  {
+   "set": "core",
+   "text": "robotics practice tomorrow from 4 to 6pm",
+   "expect": "add_event Fri 16:00-18:00",
+   "pass": false,
+   "appPass": true,
+   "ms": 3044,
+   "promptTokens": 1471,
+   "calls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "robotics practice",
+      "date": "2026-11-21",
+      "start": "16:00",
+      "end": "18:00"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Robotics Practice",
+      "date": "2026-11-20",
+      "start": "16:00",
+      "end": "18:00"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"add_event\",\"args\":{\"title\":\"robotics practice\",\"date\":\"2026-11-21\",\"start\":\"16:00\",\"end\":\"18:00\"}}],\"reply\":\"Planning updated.\"}"
+  },
+  {
+   "set": "core",
+   "text": "finish my physics problem set before 6:30 tonight",
+   "expect": "preclear PS7 today 18:30",
+   "pass": true,
+   "appPass": true,
+   "ms": 2914,
+   "promptTokens": 1472,
+   "calls": [
+    {
+     "tool": "preclear_task",
+     "args": {
+      "task_query": "finish physics problem set",
+      "date": "2026-11-19",
+      "before": "18:30"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "schedule_task",
+     "args": {
+      "task_query": "physics problem set before 6:30",
+      "date": "2026-11-19",
+      "window": "evening"
+     }
+    },
+    {
+     "tool": "preclear_task",
+     "args": {
+      "task_query": "finish physics problem set",
+      "date": "2026-11-19",
+      "before": "18:30"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"preclear_task\",\"args\":{\"task_query\":\"finish physics problem set\",\"date\":\"2026-11-19\",\"before\":\"18:30\"}}],\"reply\":\"one short friendly sentence\"}"
+  },
+  {
+   "set": "core",
+   "text": "no more studying tonight after 8",
+   "expect": "cancel_study today after 20:00",
+   "pass": false,
+   "appPass": true,
+   "ms": 3265,
+   "promptTokens": 1467,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "cancel_study",
+     "args": {
+      "date": "2026-11-19",
+      "after": "20:00"
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"HW 6.3 Integration by Parts, Problem Set 7: Rotational Dynamics\",\"to_date\":\"2026-11-20\",\"window\":\"evening\"}}],\"reply\":\"I've moved those studies to tomorrow evening.\"}"
+  },
+  {
+   "set": "core",
+   "text": "bump AIME to 8 hours a week",
+   "expect": "set_bucket_target AIME 8",
+   "pass": true,
+   "appPass": true,
+   "ms": 2752,
+   "promptTokens": 1470,
+   "calls": [
+    {
+     "tool": "set_bucket_target",
+     "args": {
+      "bucket": "AIME",
+      "hours": 8
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "set_bucket_target",
+     "args": {
+      "bucket": "AIME",
+      "hours": 8
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"set_bucket_target\",\"args\":{\"bucket\":\"AIME\",\"hours\":8}}],\"reply\":\"Your AIME study time has been bumped to 8 hours per week.\"}"
+  },
+  {
+   "set": "core",
+   "text": "move my ACT prep to saturday morning",
+   "expect": "move_block ACT Sat morning",
+   "pass": false,
+   "appPass": true,
+   "ms": 3026,
+   "promptTokens": 1468,
+   "calls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "ACT Prep",
+      "to_date": "2026-11-20",
+      "window": "morning"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "ACT",
+      "to_date": "2026-11-21",
+      "window": "morning"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"ACT Prep\",\"to_date\":\"2026-11-20\",\"window\":\"morning\"}}],\"reply\":\"OK, your ACT prep has been moved to Saturday morning.\"}"
+  },
+  {
+   "set": "core",
+   "text": "the calc homework will take like an hour and a half",
+   "expect": "set_estimate HW 6.3 90",
+   "pass": false,
+   "appPass": true,
+   "ms": 3060,
+   "promptTokens": 1471,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "set_estimate",
+     "args": {
+      "task_query": "calc homework",
+      "minutes": 90
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"set_estimate\",\"args\":{\"task_query\":\"AP Calculus BC: HW 6.3 Integration by Parts\"}}],\"reply\":\"I've adjusted the time needed for the AP Calculus BC homework to account for your estimate.\"}"
+  },
+  {
+   "set": "core",
+   "text": "the moment of inertia lab is brutal, difficulty 5",
+   "expect": "set_load Lab 4 = 5",
+   "pass": false,
+   "appPass": false,
+   "ms": 2945,
+   "promptTokens": 1471,
+   "calls": [],
+   "appCalls": [],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"set_load\",\"args\":{\"task_query\":\"AP Physics C Mech: Lab 4: Moment of Inertia\"}}],\"reply\":\"I've marked the task as high cognitive load to help with focus.\"}"
+  },
+  {
+   "set": "core",
+   "text": "I already turned in the stoichiometry quiz",
+   "expect": "mark_done Stoich quiz",
+   "pass": false,
+   "appPass": true,
+   "ms": 2721,
+   "promptTokens": 1469,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "mark_done",
+     "args": {
+      "task_query": "stoichiometry quiz"
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"cancel_study\",\"args\":{\"date\":\"2026-11-19\"}}],\"reply\":\"stoichiometry quiz has been cancelled from your schedule.\"}"
+  },
+  {
+   "set": "core",
+   "text": "what's my grade in chem right now?",
+   "expect": "ask_canvas grades chem",
+   "pass": false,
+   "appPass": true,
+   "ms": 2448,
+   "promptTokens": 1469,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "ask_canvas",
+     "args": {
+      "what": "grades",
+      "course": "chem",
+      "search": null
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\": [], \"reply\":\"I don't have direct access to your grades, you'll need to check that yourself.\"}"
+  },
+  {
+   "set": "core",
+   "text": "do I have any missing assignments in calc?",
+   "expect": "ask_canvas assignments calc",
+   "pass": false,
+   "appPass": true,
+   "ms": 3296,
+   "promptTokens": 1469,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "ask_canvas",
+     "args": {
+      "what": "assignments",
+      "course": "calc",
+      "search": "missing"
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"ask_canvas\",\"args\":{\"course\":\"AP Calculus BC\",\"search\":\"HW 6.3 Integration by Parts\"}}],\"reply\":\"The assignment for AP Calculus BC: HW 6.3 Integration by Parts is due tomorrow at 08:30.\"}"
+  },
+  {
+   "set": "core",
+   "text": "start a focus session on my research",
+   "expect": "timer start RESEARCH",
+   "pass": true,
+   "appPass": true,
+   "ms": 2651,
+   "promptTokens": 1467,
+   "calls": [
+    {
+     "tool": "timer",
+     "args": {
+      "action": "start",
+      "target": "RESEARCH"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "timer",
+     "args": {
+      "action": "start",
+      "target": "RESEARCH"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"timer\",\"args\":{\"action\":\"start\",\"target\":\"RESEARCH\"}}],\"reply\":\"Focus session on your research has been started.\"}"
+  },
+  {
+   "set": "core",
+   "text": "pause the timer",
+   "expect": "timer pause",
+   "pass": true,
+   "appPass": true,
+   "ms": 2776,
+   "promptTokens": 1463,
+   "calls": [
+    {
+     "tool": "timer",
+     "args": {
+      "action": "pause",
+      "target": "Problem Set 7: Rotational Dynamics"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "timer",
+     "args": {
+      "action": "pause",
+      "target": null
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"timer\",\"args\":{\"action\":\"pause\",\"target\":\"Problem Set 7: Rotational Dynamics\"}}],\"reply\":\"Timer paused for the specified task.\"}"
+  },
+  {
+   "set": "core",
+   "text": "email my college counselor asking to meet next week",
+   "expect": "draft_email to counselor, no made-up address",
+   "pass": false,
+   "appPass": true,
+   "ms": 2607,
+   "promptTokens": 1469,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "draft_email",
+     "args": {
+      "to": "college counselor",
+      "subject": "To meet next week",
+      "reason": "you asked to email college counselor",
+      "body": "Hi,\n\nI wanted to reach out about to meet next week.\n\nThank you,\n"
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"ask_canvas\",\"args\":{\"what\":\"modules\",\"course\":null,\"search\":\"next week\"}}],\"reply\":\"one short friendly sentence\"}"
+  },
+  {
+   "set": "core",
+   "text": "ugh I'm so burnt out today",
+   "expect": "check_in mood <= 2",
+   "pass": false,
+   "appPass": true,
+   "ms": 2761,
+   "promptTokens": 1467,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "check_in",
+     "args": {
+      "mood": 1
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"set_load\",\"args\":{\"task_query\":\"today's activities\"}}],\"reply\":\"I adjusted the load for your current activities to reflect your feeling of being burnt out today.\"}"
+  },
+  {
+   "set": "core",
+   "text": "honestly today was great, I feel super motivated",
+   "expect": "check_in mood >= 4",
+   "pass": false,
+   "appPass": true,
+   "ms": 2414,
+   "promptTokens": 1470,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "check_in",
+     "args": {
+      "mood": 5
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"set_estimate\",\"args\":{\"task_query\":\"feeling today\"}}],\"reply\":\"one short friendly sentence\"}"
+  },
+  {
+   "set": "core",
+   "text": "I have debate at 6 tonight so get the gatsby reading done before then",
+   "expect": "add_event today 18:00 + preclear Gatsby 18:00",
+   "pass": false,
+   "appPass": true,
+   "ms": 3257,
+   "promptTokens": 1476,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Debate",
+      "date": "2026-11-19",
+      "start": "18:00",
+      "end": null
+     }
+    },
+    {
+     "tool": "preclear_task",
+     "args": {
+      "task_query": "the gatsby reading",
+      "date": "2026-11-19",
+      "before": "18:00"
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"Gatsby Chapter 5 Reading + Annotations\",\"to_date\":\"2026-11-21\",\"window\":\"evening\"}}],\"reply\":\"\u5c06Gatsby\u7b2c5\u7ae0\u9605\u8bfb\u4e0e\u6ce8\u91ca\u79fb\u5230\u660e\u5929\u665a\u4e0a\"}"
+  },
+  {
+   "set": "core",
+   "text": "push my USAAIO block to sunday afternoon and set the physics goal to 4 hours",
+   "expect": "move_block USAAIO Sun afternoon + PHYSICS 4",
+   "pass": false,
+   "appPass": true,
+   "ms": 3019,
+   "promptTokens": 1478,
+   "calls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "USAAIO goal",
+      "to_date": "2026-11-22",
+      "window": "evening"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "USAAIO",
+      "to_date": "2026-11-22",
+      "window": "afternoon"
+     }
+    },
+    {
+     "tool": "set_bucket_target",
+     "args": {
+      "bucket": "PHYSICS",
+      "hours": 4
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"USAAIO goal\",\"to_date\":\"2026-11-22\",\"window\":\"evening\"}}],\"reply\":\"USAAIO block moved to Sunday evening.\"}"
+  },
+  {
+   "set": "core",
+   "text": "any new announcements in english?",
+   "expect": "ask_canvas announcements english",
+   "pass": false,
+   "appPass": true,
+   "ms": 2136,
+   "promptTokens": 1466,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "ask_canvas",
+     "args": {
+      "what": "announcements",
+      "course": "english",
+      "search": null
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\": [], \"reply\":\"No new announcements found.\"}"
+  },
+  {
+   "set": "core",
+   "text": "I'm going to a concert saturday 7 to 10pm",
+   "expect": "add_event Sat 19:00-22:00",
+   "pass": true,
+   "appPass": true,
+   "ms": 3305,
+   "promptTokens": 1475,
+   "calls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Concert",
+      "date": "2026-11-21",
+      "start": "19:00",
+      "end": "22:00"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Concert",
+      "date": "2026-11-21",
+      "start": "19:00",
+      "end": "22:00"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"add_event\",\"args\":{\"title\":\"Concert\", \"date\":\"2026-11-21\", \"start\":\"19:00\", \"end\":\"22:00\"}}],\"reply\":\"Your concert is all set for Saturday night.\"}"
+  },
+  {
+   "set": "keep",
+   "text": "keep my AIME block tonight but move research to saturday afternoon",
+   "expect": "keep_block AIME + move_block RESEARCH Sat afternoon",
+   "pass": false,
+   "appPass": true,
+   "ms": 2975,
+   "promptTokens": 1473,
+   "calls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "RESEARCH",
+      "to_date": "2026-11-20",
+      "window": "afternoon"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "keep_block",
+     "args": {
+      "target": "AIME",
+      "date": "2026-11-19"
+     }
+    },
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "RESEARCH",
+      "to_date": "2026-11-21",
+      "window": "afternoon"
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"RESEARCH\",\"to_date\":\"2026-11-20\",\"window\":\"afternoon\"}}],\"reply\":\"\u7814\u7a76\u6d3b\u52a8\u79fb\u5230\u4e86\u5468\u516d\u4e0b\u5348\"}"
+  },
+  {
+   "set": "keep",
+   "text": "don't move the calc homework, it has to get done today",
+   "expect": "keep_block HW 6.3, nothing moved",
+   "pass": false,
+   "appPass": true,
+   "ms": 3054,
+   "promptTokens": 1473,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "keep_block",
+     "args": {
+      "target": "calc homework",
+      "date": null
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"HW 6.3 Integration by Parts\",\"to_date\":\"2026-11-19\",\"window\":\"evening\"}}],\"reply\":\"calc homework will be moved to tonight\"}"
+  },
+  {
+   "set": "keep",
+   "text": "dentist appointment tomorrow 4 to 5, keep everything else the same",
+   "expect": "add_event Fri 16:00-17:00 only",
+   "pass": false,
+   "appPass": true,
+   "ms": 3463,
+   "promptTokens": 1475,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "add_event",
+     "args": {
+      "title": "Dentist Appointment",
+      "date": "2026-11-20",
+      "start": "16:00",
+      "end": "17:00"
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"Problem Set 7: Rotational Dynamics\",\"to_date\":\"2026-11-21\",\"window\":\"evening\"}}],\"reply\":\"\u60a8\u7684\u7259\u533b\u9884\u7ea6\u5df2\u7ecf\u5b89\u6392\u5728\u4e86\u660e\u5929\u4e0b\u53484\u70b9\u52305\u70b9\uff0c\u5176\u4ed6\u6240\u6709\u6d3b\u52a8\u4fdd\u6301\u4e0d\u53d8\u3002\"}"
+  },
+  {
+   "set": "keep",
+   "text": "move the gatsby reading to tomorrow evening and leave the physics lab where it is",
+   "expect": "move_block Gatsby Fri evening + keep_block Lab 4",
+   "pass": false,
+   "appPass": true,
+   "ms": 3146,
+   "promptTokens": 1476,
+   "calls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "Gatsby Chapter 5 Reading + Annotations",
+      "to_date": "2026-11-20",
+      "window": "evening"
+     }
+    }
+   ],
+   "appCalls": [
+    {
+     "tool": "move_block",
+     "args": {
+      "target": "the gatsby reading",
+      "to_date": "2026-11-20",
+      "window": "evening"
+     }
+    },
+    {
+     "tool": "keep_block",
+     "args": {
+      "target": "physics lab",
+      "date": null
+     }
+    }
+   ],
+   "parsed": true,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"Gatsby Chapter 5 Reading + Annotations\",\"to_date\":\"2026-11-20\",\"window\":\"evening\"}}],\"reply\":\"Gatsby Chapter 5 Reading moved to tomorrow evening.\"}"
+  },
+  {
+   "set": "assign",
+   "text": "I want to do the essay draft on saturday",
+   "expect": "schedule_task Essay Draft Sat",
+   "pass": false,
+   "appPass": true,
+   "ms": 3048,
+   "promptTokens": 1470,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "schedule_task",
+     "args": {
+      "task_query": "essay draft",
+      "date": "2026-11-21",
+      "window": null
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"add_event\",\"args\":{\"title\":\"essay draft on Saturday\",\"date\":\"2026-11-21\",\"start\":\"22:30\",\"end\":null}}],\"reply\":\"one short friendly sentence\"}"
+  },
+  {
+   "set": "assign",
+   "text": "do the physics problem set before the calc homework tonight",
+   "expect": "order_blocks PS7 then HW 6.3",
+   "pass": false,
+   "appPass": true,
+   "ms": 3376,
+   "promptTokens": 1470,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "order_blocks",
+     "args": {
+      "first": "PHYSICS",
+      "then": "calc homework",
+      "date": "2026-11-19"
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"HW 6.3 Integration by Parts\",\"to_date\":\"2026-11-19\",\"window\":\"evening\"}}],\"reply\":\"\u5c06\u7269\u7406\u95ee\u9898\u96c6\u79fb\u5230\u4eca\u5929\u665a\u4e0a\uff0c\u786e\u4fdd\u4f60\u5148\u5b8c\u6210\u5b83\u518d\u5f00\u59cb\u5fae\u5206\u79ef\u5206\u4f5c\u4e1a\u3002\"}"
+  },
+  {
+   "set": "assign",
+   "text": "work on the moment of inertia lab tomorrow afternoon",
+   "expect": "schedule_task Lab 4 Fri afternoon",
+   "pass": false,
+   "appPass": true,
+   "ms": 3474,
+   "promptTokens": 1469,
+   "calls": [],
+   "appCalls": [
+    {
+     "tool": "schedule_task",
+     "args": {
+      "task_query": "moment of inertia lab",
+      "date": "2026-11-20",
+      "window": "afternoon"
+     }
+    }
+   ],
+   "parsed": false,
+   "raw": "<think>\n\n</think>\n\n{\"calls\":[{\"tool\":\"move_block\",\"args\":{\"target\":\"AP Physics C Mech: Lab 4: Moment of Inertia \u00b7 due Mon 23:59\",\"to_date\":\"2026-11-21\",\"window\":\"afternoon\"}}],\"reply\":\"\u660e\u5929\u4e0b\u5348\u4f60\u53ef\u4ee5\u5f00\u59cb\u5de5\u4f5c\u4e86\u3002\"}"
+  }
+ ],
+ "estimates": [
+  {
+   "id": "canvas-9001",
+   "title": "Problem Set 7: Rotational Dynamics",
+   "minutes": 120,
+   "type": "HW",
+   "load": 3,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 479,
+   "raw": "<think>\n\n</think>\n\n{\"task_type\":\"Homework\",\"cognitive_load\":3,\"minutes\":120,\"confidence\":0.8}"
+  },
+  {
+   "id": "canvas-9002",
+   "title": "Lab 4: Moment of Inertia",
+   "minutes": 200,
+   "type": "Lab",
+   "load": 3,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 408,
+   "raw": "<think>\n\n</think>\n\n{\"task_type\":\"Lab\",\"cognitive_load\":3,\"minutes\":200,\"confidence\":0.8}"
+  },
+  {
+   "id": "canvas-9003",
+   "title": "HW 6.3 Integration by Parts",
+   "minutes": 45,
+   "type": "HW",
+   "load": 3,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 396,
+   "raw": "<think>\n\n</think>\n\n{\"task_type\":\"HW\",\"cognitive_load\":3,\"minutes\":45,\"confidence\":0.8}"
+  },
+  {
+   "id": "canvas-9004",
+   "title": "Unit 6 Test",
+   "minutes": 120,
+   "type": "Exam",
+   "load": 4,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 402,
+   "raw": "<think>\n\n</think>\n\n{\"task_type\":\"test\",\"cognitive_load\":4,\"minutes\":120,\"confidence\":0.8}"
+  },
+  {
+   "id": "canvas-9005",
+   "title": "Gatsby Chapter 5 Reading + Annotations",
+   "minutes": 120,
+   "type": "HW",
+   "load": 3,
+   "valid": true,
+   "inRange": false,
+   "typeOk": true,
+   "ms": 400,
+   "raw": "<think>\n\n</think>\n\n{\"task_type\":\"HW\",\"cognitive_load\":3,\"minutes\":120,\"confidence\":1}"
+  },
+  {
+   "id": "canvas-9006",
+   "title": "Essay Draft: The American Dream",
+   "minutes": 1200,
+   "type": "Project",
+   "load": 4,
+   "valid": true,
+   "inRange": false,
+   "typeOk": true,
+   "ms": 426,
+   "raw": "<think>\n\n</think>\n\n{\"task_type\":\"Project\",\"cognitive_load\":4,\"minutes\":1200,\"confidence\":0.8}"
+  },
+  {
+   "id": "canvas-9007",
+   "title": "Stoichiometry Quiz",
+   "minutes": 45,
+   "type": "Quiz",
+   "load": 3,
+   "valid": true,
+   "inRange": true,
+   "typeOk": true,
+   "ms": 376,
+   "raw": "<think>\n\n</think>\n\n{\"task_type\":\"Quiz\",\"cognitive_load\":3,\"minutes\":45,\"confidence\":0.8}"
+  }
+ ],
+ "extracts": [
+  {
+   "got": 0,
+   "of": 3,
+   "found": [],
+   "ms": 7712,
+   "raw": "<think>\n\n</think>\n\n{\"items\":[{\"title\":\"Problem Set 8\",\"course\":\"AP Physics C\",\"due\":\"2026-11-24T11:59\",\"kind\":\"task\",\"minutes\":100860},\"{ \" \n  ,\"title\"  ,\"AP Calculus BC Quiz 6.4\" \n  ,\"course\" ,\"AP Calculus BC\" \n  ,\"due\"   ,\"2026-11-23T08:30\" \n  ,\"kind\"  ,\"task\" \n  ,\"minutes\" ,7560\n  ,\"title\"  ,\"Robotics meeting\" \n  ,\"course\" ,\"Robotics\" \n  ,\"due\"   ,\"2026-11-21T15:45\" \n  ,\"kind\"  ,\"event\" \n  ,\"minutes\" ,null\n  ,\"title\"  ,\"null\" \n  ,\"course\" ,\"null\" \n  ,\"due\"   ,\"null\" \n  ,\"kind\"  ,\"null\" \n  ,\"minutes\" ,null\n  ,\"title\"  ,\"null\" \n  ,\"course\" ,\"null\" \n  ,\"due\"   ,\"null\" \n  ,\"kind\"  ,\"null\" \n  ,\"minutes\" ,null\n  ,\"title\"  ,\"null\" \n  ,\"course\" ,\"null\" \n  ,\"due\"   ,\"null\" \n  ,\"kind\"  ,\"null\" \n  ,\"minutes\" ,null\n  ,\"title\"  ,\"null\" \n  ,\"course\" ,\"null\" \n  ,\"due\"   ,\"null\" \n  ,\"kind\"  ,\"null\" \n  ,\"minutes\" ,null\n  ,\"title\"  ,\"null\" \n  ,\"course\" ,\"null\" \n  ,\"due\"   ,\"null\" \n  ,\"kind\"  ,\"null\" \n  ,\"minutes\" ,null\n  ,\"title\"  ,\"null\" \n  ,\"course\" ,\"null\" \n  ,\"due\"   ,\"null\" \n  ,\"kind\"  ,\"null\" \n  ,\"minutes\" ,null\n  ,\"title\"  ,\"null\" \n  ,\"course\" ,\"null\" \n  ,\"due\"   ,\"null\" \n  ,\"kind\"  ,\"null\" \n  ,\"minutes\" ,null\n  ,\"title\"  ,\"null\" \n  ,\"course\" ,\"null\" \n "
+  },
+  {
+   "got": 0,
+   "of": 2,
+   "found": [
+    {
+     "title": "build session sat 10am in the shop, bring safety glasses",
+     "course": "",
+     "due": null,
+     "kind": "event",
+     "minutes": null
+    },
+    {
+     "title": "reminder CAD files due this Sunday 9pm!!",
+     "course": "",
+     "due": "2026-11-26T23:00",
+     "kind": "task",
+     "minutes": null
+    }
+   ],
+   "ms": 1175,
+   "raw": "<think>\n\n</think>\n\n{\"items\":[{\"title\":\"build session sat 10am in the shop, bring safety glasses\",\"course\":\"\",\"due\":null,\"kind\":\"event\",\"minutes\":null},{\"title\":\"reminder CAD files due this Sunday 9pm!!\",\"course\":\"\",\"due\":\"2026-11-26T23:00\",\"kind\":\"task\",\"minutes\":null}] }"
+  }
+ ]
+}

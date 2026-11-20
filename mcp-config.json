@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "study-relay-local": {
+      "httpUrl": "http://127.0.0.1:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer ${RELAY_TOKEN}"
+      }
+    },
+    "study-relay-hosted": {
+      "url": "https://your-domain.example.com/mcp",
+      "httpUrl": "https://your-domain.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${RELAY_TOKEN}"
+      }
+    }
+  }
+}
