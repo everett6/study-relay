@@ -15,10 +15,10 @@ let model: PreTrainedModel | null = null;
 let gpuChunkSize = 64;
 let usePrefixCache = true;
 let maxPromptTokens = 1536;
-// prefix KV cache: system prompt text -> model state after it (CPU copy). Two entries cover the
-// planner prompt plus whichever other prompt (estimate / extract / summarize) ran last.
+// prefix KV cache: system prompt text -> float16-compressed model state after it (CPU copy).
+// 4 slots fit in the memory budget of 2 uncompressed slots, covering planner, estimate, extract, and summarize.
 const prefixCache = new Map<string, { ids: number[]; state?: CachedState }>();
-const PREFIX_SLOTS = 2;
+const PREFIX_SLOTS = 4;
 const post = (m: unknown) => (self as unknown as Worker).postMessage(m);
 self.addEventListener("unhandledrejection", (ev) => {
   ev.preventDefault();

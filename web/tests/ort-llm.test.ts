@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as ort from "onnxruntime-web/webgpu";
-import { f16ToF32, generateLowVram, lowVramSessionOptions, mapStatePairs, sampleNextToken, type CachedState, type LowVramSession } from "../src/ai/ortLlm";
+import { f16ToF32, f32ToF16, generateLowVram, lowVramSessionOptions, mapStatePairs, sampleNextToken, type CachedState, type LowVramSession } from "../src/ai/ortLlm";
 
 describe("custom low-VRAM ONNX WebGPU runner", () => {
   it("configures low-VRAM session options", () => {
@@ -115,6 +115,9 @@ describe("custom low-VRAM ONNX WebGPU runner", () => {
     const reused = await generateLowVram(session, prompt, { ...opts, prefix: entry });
     expect(reused).toEqual(plain);
     expect(fed).toBe(plainFed - sys.length);
+    // f32 -> f16 compression cuts float32 prefix KV cache RAM in half (2 bytes per element)
+    expect(entry.state?.bytes).toBe(2);
+    expect(f16ToF32(f32ToF16(12.5))).toBeCloseTo(12.5, 2);
 
     // a prompt that doesn't start with the cached prefix ignores the cache
     fed = 0;

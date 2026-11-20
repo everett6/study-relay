@@ -41,8 +41,8 @@ export interface GenerateOpts {
   onPrefix?: (s: CachedState) => void;
 }
 
-/** Model state after a prompt prefix, copied to CPU memory so it survives disposal of GPU tensors. */
-export interface CachedState { len: number; tensors: Record<string, { type: ort.Tensor.Type; data: ort.Tensor.DataType; dims: readonly number[] }>; bytes: number }
+/** Model state after a prompt prefix, copied to CPU memory (float32 quantized to float16 for 2x compression). */
+export interface CachedState { len: number; tensors: Record<string, { type: ort.Tensor.Type; data: ort.Tensor.DataType; dims: readonly number[]; f16?: boolean }>; bytes: number }
 
 export const startsWith = (a: number[], p: number[]) => p.length <= a.length && p.every((v, i) => a[i] === v);
 
@@ -111,6 +111,24 @@ export function mapStatePairs(inputNames: readonly string[], outputNames: readon
     if (present) pairs.push({ past, present });
   }
   return pairs;
+}
+
+/** Convert float32 to IEEE 754 binary16 (uint16) for 2x prefix KV cache compression. */
+export function f32ToF16(val: number): number {
+  const f32 = new Float32Array(1);
+  const u32 = new Uint32Array(f32.buffer);
+  f32[0] = val;
+  const x = u32[0];
+  const sign = (x >> 16) & 0x8000;
+  let exp = ((x >> 23) & 0xff) - 127 + 15;
+  let mant = (x >> 13) & 0x3ff;
+  if (exp <= 0) {
+    if (exp < -10) return sign;
+    mant = (mant | 0x400) >> (1 - exp);
+    return sign | mant;
+  }
+  if (exp >= 31) return sign | 0x7c00 | (mant ? 1 : 0);
+  return sign | (exp << 10) | mant;
 }
 
 /** Convert IEEE 754 binary16 (uint16) to float32. */
@@ -224,8 +242,17 @@ export async function generateLowVram(
   let pastLen = 0;
   let start = 0;
   if (prefix?.state && prefix.state.len === prefix.ids.length) {
-    // reuse: start from the cached state; ORT uploads these CPU tensors to the GPU
-    state = Object.fromEntries(Object.entries(prefix.state.tensors).map(([k, t]) => [k, mkTensor(t.type, t.data, t.dims)]));
+    // reuse: dispose empty placeholder tensors, then restore compressed CPU state to GPU
+    for (const t of Object.values(state)) t?.dispose();
+    state = Object.fromEntries(Object.entries(prefix.state.tensors).map(([k, t]) => {
+      let data = t.data;
+      if (t.f16 && t.type === "float32" && data instanceof Uint16Array) {
+        const f32 = new Float32Array(data.length);
+        for (let i = 0; i < data.length; i++) f32[i] = f16ToF32(data[i]);
+        data = f32;
+      }
+      return [k, mkTensor(t.type, data, t.dims)];
+    }));
     pastLen = start = prefix.state.len;
   }
 
@@ -278,8 +305,15 @@ export async function generateLowVram(
       const tensors: CachedState["tensors"] = {};
       let bytes = 0;
       for (const [k, t] of Object.entries(state)) {
-        const data = await t.getData(false); // copy GPU -> CPU, keep the GPU tensor for this run
-        tensors[k] = { type: t.type, data, dims: t.dims };
+        let data = await t.getData(false); // copy GPU -> CPU, keep the GPU tensor for this run
+        let f16 = false;
+        if (t.type === "float32" && data instanceof Float32Array) {
+          const u16 = new Uint16Array(data.length);
+          for (let i = 0; i < data.length; i++) u16[i] = f32ToF16(data[i]);
+          data = u16;
+          f16 = true;
+        }
+        tensors[k] = { type: t.type, data, dims: t.dims, ...(f16 ? { f16: true } : {}) };
         bytes += (data as ArrayBufferView).byteLength ?? 0;
       }
       opts.onPrefix({ len: prefix.ids.length, tensors, bytes });

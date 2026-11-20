@@ -210,24 +210,56 @@ func cleanCourse(name string) string {
 	return strings.Join(words, " ")
 }
 
+type canvasETagEntry struct {
+	etag string
+	body []byte
+}
+
+var (
+	canvasETagMu sync.Mutex
+	canvasETags  = map[string]canvasETagEntry{}
+)
+
 func (s *Server) canvasGet(ctx context.Context, path string, out any) error {
 	if s.integ.CanvasToken == "" {
 		return fmt.Errorf("no server-side Canvas token: set CANVAS_API_TOKEN in the relay's .env")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.cfg.CanvasBase, "/")+path, nil)
+	fullURL := strings.TrimRight(s.cfg.CanvasBase, "/") + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+s.integ.CanvasToken)
+	canvasETagMu.Lock()
+	cached, hasCached := canvasETags[fullURL]
+	canvasETagMu.Unlock()
+	if hasCached && cached.etag != "" {
+		req.Header.Set("If-None-Match", cached.etag)
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("canvas unreachable")
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified && hasCached {
+		return json.Unmarshal(cached.body, out)
+	}
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("canvas returned %d for %s", resp.StatusCode, strings.SplitN(path, "?", 2)[0])
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return err
+	}
+	if etag := resp.Header.Get("ETag"); etag != "" {
+		canvasETagMu.Lock()
+		if len(canvasETags) > 64 {
+			canvasETags = map[string]canvasETagEntry{}
+		}
+		canvasETags[fullURL] = canvasETagEntry{etag: etag, body: body}
+		canvasETagMu.Unlock()
+	}
+	return json.Unmarshal(body, out)
 }
 
 type canvasCourse struct {
@@ -302,7 +334,7 @@ func (s *Server) canvasExplore(ctx context.Context, a exploreArgs) (map[string]a
 		canvasCacheMu.Lock()
 		ent, ok := canvasCache[cacheKey]
 		canvasCacheMu.Unlock()
-		if ok && time.Since(ent.at) < 90*time.Second {
+		if ok && time.Since(ent.at) < 10*time.Minute {
 			return ent.out, nil
 		}
 	}
@@ -895,14 +927,22 @@ var errNoChange error = noChange{}
 
 func (s *Server) pollLoop(ctx context.Context) {
 	st := s.integ.Status()
-	if !st["discord_read"].(bool) && !st["email_read"].(bool) {
+	hasInbox := st["discord_read"].(bool) || st["email_read"].(bool)
+	hasCanvas := s.integ.CanvasToken != ""
+	if !hasInbox && !hasCanvas {
 		return
 	}
 	t := time.NewTicker(s.integ.PollEvery)
 	defer t.Stop()
 	for {
 		pctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		_, _ = s.pollOnce(pctx)
+		if hasInbox {
+			_, _ = s.pollOnce(pctx)
+		}
+		if s.integ.CanvasToken != "" {
+			_, _ = s.canvasExplore(pctx, exploreArgs{What: "courses", Refresh: true})
+			_, _ = s.canvasExplore(pctx, exploreArgs{What: "assignments", Refresh: true})
+		}
 		cancel()
 		select {
 		case <-ctx.Done():
