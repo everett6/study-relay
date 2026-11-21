@@ -944,6 +944,7 @@ func (s *Server) pollLoop(ctx context.Context) {
 			_, _ = s.canvasExplore(pctx, exploreArgs{What: "assignments", Refresh: true})
 		}
 		cancel()
+		s.triggerPiMatrixAsync()
 		select {
 		case <-ctx.Done():
 			return

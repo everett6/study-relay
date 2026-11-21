@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -35,13 +36,16 @@ var version = "1.1.0"
 var distFS embed.FS
 
 type Config struct {
-	CanvasBase     string
-	Token          string // optional shared secret for /api/sync and /mcp
-	AllowedOrigins []string
-	LocalLLMURL    string
-	LocalLLMModel  string
-	LocalLLMCtx    int
-	LocalLLMAPIKey string
+	CanvasBase      string
+	Token           string // optional shared secret for /api/sync and /mcp
+	AllowedOrigins  []string
+	LocalLLMURL     string
+	LocalLLMModel   string
+	LocalLLMCtx     int
+	LocalLLMAPIKey  string
+	MatrixLlamaBin  string
+	MatrixGGUFPath  string
+	MatrixLlamaPort int
 }
 
 type Server struct {
@@ -208,6 +212,9 @@ func (s *Server) postSync(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if len(unestimatedOpenTasks(body.State)) > 0 {
+		s.triggerPiMatrixAsync()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": nv})
 }
@@ -378,9 +385,14 @@ func main() {
 		log.Printf("relay is reachable from the network, so it requires a token (saved in %s). "+
 			"Run `study-relay pair` to print a link that signs a device in. Set RELAY_TOKEN to choose your own.", tokenFile)
 	}
+	matrixPort, _ := strconv.Atoi(env("MATRIX_LLAMA_PORT", "18089"))
 	srv := NewServer(store, Config{
-		CanvasBase: env("CANVAS_BASE_URL", "https://esuhsd.instructure.com"),
-		Token:      token, AllowedOrigins: origins,
+		CanvasBase:      env("CANVAS_BASE_URL", "https://esuhsd.instructure.com"),
+		Token:           token,
+		AllowedOrigins:  origins,
+		MatrixLlamaBin:  os.Getenv("MATRIX_LLAMA_BIN"),
+		MatrixGGUFPath:  os.Getenv("MATRIX_GGUF_PATH"),
+		MatrixLlamaPort: matrixPort,
 	}, loc, nil)
 	srv.integ = IntegrationsFromEnv()
 	hs := &http.Server{Addr: addr, Handler: srv.Routes(),

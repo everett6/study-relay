@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -810,5 +811,47 @@ func TestMCPExtendedToolsResourcesPrompts(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/llm/chat", strings.NewReader(`{"messages":[{"role":"user","content":"hi"}],"enable_thinking":false}`)))
 	if rec.Code != 200 || gotBody["reasoning_effort"] != "none" || gotBody["options"] == nil {
 		t.Fatalf("local llm proxy should turn thinking off: code=%d body=%v", rec.Code, gotBody)
+	}
+}
+
+func TestPiMatrixEstimatorParsesDirectionsAndComments(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		msgs := body["messages"].([]any)
+		user := msgs[1].(map[string]any)["content"].(string)
+		if !strings.Contains(user, "Problems 1-10") || !strings.Contains(user, "Teacher: skip #9") {
+			t.Fatalf("expected directions and comments in prompt, got: %s", user)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": `{"task_type":"HW","cognitive_load":4,"minutes":43,"confidence":0.85,"why":"9 physics problems"}`},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	pts := 20.0
+	task := Task{
+		ID:          "t1",
+		Course:      "AP Physics 1",
+		Title:       "Rotational Set",
+		Description: "Problems 1-10",
+		Comments:    []string{"Teacher: skip #9"},
+		Category:    "homework",
+		Points:      &pts,
+		Status:      "open",
+		EstSource:   "heuristic",
+	}
+	todo := unestimatedOpenTasks(&State{Tasks: []Task{task}})
+	if len(todo) != 1 {
+		t.Fatalf("expected 1 unestimated task, got %d", len(todo))
+	}
+	est, err := estimateTaskViaEndpoint(context.Background(), srv.Client(), srv.URL, "lfm3", task)
+	if err != nil {
+		t.Fatalf("estimateTaskViaEndpoint: %v", err)
+	}
+	if est.Minutes != 45 || est.CognitiveLoad != 4 {
+		t.Fatalf("unexpected estimate: %+v", est)
 	}
 }
