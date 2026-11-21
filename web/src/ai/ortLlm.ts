@@ -327,6 +327,8 @@ export async function generateLowVram(
       generated.push(nextId);
       seen.add(nextId);
       nextId = await step([nextId]);
+      // Yield briefly every 8 tokens so WebGPU command bursts never freeze browser/OS compositing.
+      if ((i & 7) === 7) await new Promise((r) => setTimeout(r, 0));
     }
     return generated;
   } finally {

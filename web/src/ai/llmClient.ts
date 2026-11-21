@@ -290,6 +290,7 @@ export async function checkWebGPU(tries = 3): Promise<GpuCheck> {
 export class LLMClient {
   status: LLMStatus = { state: "off", progress: 0, text: "Smart mode is off. Rules handle commands." };
   private engine: Engine | null = null;
+  private activeWorker: Worker | null = null;
   private onChange: (s: LLMStatus) => void;
   /** LFM3 reasons before answering by default; off keeps replies fast. */
   thinking = false;
@@ -307,6 +308,15 @@ export class LLMClient {
 
   get ready(): boolean { return this.status.state === "ready" && !!this.engine; }
 
+  /** Terminate any running Web Worker and free GPU/RAM weights. */
+  unload(): void {
+    this.activeWorker?.terminate();
+    this.activeWorker = null;
+    this.engine = null;
+    this.estCache.clear();
+    this.set({ state: "off", progress: 0, model: undefined, modelLabel: undefined, provider: undefined, text: "Model unloaded. Rules handle commands." });
+  }
+
   /** Check if the local/cloud Relay AI server (/api/llm/status) is reachable. */
   static async nativeStatus(token = ""): Promise<{ ok: boolean; model?: string; context_window?: number; url?: string; cloud?: boolean }> {
     try {
@@ -320,6 +330,8 @@ export class LLMClient {
   /** Opt-in model load (only call from a user click). Supports switching models cleanly. */
   async load(model: string = MODELS[0].id, opts: { thinking?: boolean; token?: string; prefixCache?: boolean } = {}): Promise<boolean> {
     if (this.status.state === "loading") return false;
+    this.activeWorker?.terminate();
+    this.activeWorker = null;
     this.engine = null;
     const backend = MODELS.find((m) => m.id === model)?.backend ?? "webllm";
     if (backend === "native") {
@@ -363,10 +375,11 @@ export class LLMClient {
     try {
       this.thinking = !!opts.thinking;
       const { call, worker } = workerEngine(backend, (p) => this.set({ progress: p.progress, text: p.text }));
+      this.activeWorker = worker;
       // ask the browser not to evict the cached model weights when storage runs low
       void navigator.storage?.persist?.().catch(() => false);
       try { await call({ type: "load", model, contextTokens: CONTEXT_TOKENS, prefixCache: opts.prefixCache ?? true }); }
-      catch (e) { worker.terminate(); throw e; }
+      catch (e) { worker.terminate(); this.activeWorker = null; throw e; }
       this.engine = { chat: async (request) => {
         const r = await call({ type: "chat", request });
         this.lastPromptTokens = Number(r.prompt_tokens) || 0;
@@ -430,7 +443,7 @@ export class LLMClient {
         (past.length ? `\nStudent's past actual times:\n${past.map((x) => `- ${x.course}: ${x.title.slice(0, 50)} = ${x.human_minutes} min`).join("\n")}` : "") +
         `\nDirections: ${(t.description ?? "").slice(0, 1200) || "(none)"}` +
         (cmts ? `\nTeacher/Submission Comments: ${cmts.slice(0, 600)}` : ""),
-        96, undefined, ESTIMATE_SCHEMA)) as Partial<Estimate> | null;
+        64, undefined, ESTIMATE_SCHEMA)) as Partial<Estimate> | null;
       const minutes = Number(j?.minutes), load = Number(j?.cognitive_load), conf = Number(j?.confidence);
       if (!j || !(minutes >= 5 && minutes <= 1200) || !(load >= 1 && load <= 5)) return h;
       const types = ["HW", "Quiz", "Exam", "Project", "Lab"];

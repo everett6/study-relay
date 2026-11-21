@@ -121,15 +121,21 @@ export class Engine {
       this.replanInto(st);
     });
     if (!this.llm.ready) return todo.length;
+    const focus = subjectFocus(this.state, this.clock());
+    const refined: [string, ReturnType<typeof heuristicEstimate>][] = [];
     for (const t of todo) {
-      const e = await this.llm.estimate(t, this.state.tasks, focusFor(subjectFocus(this.state, this.clock()), t.course));
-      if (e.source === "llm") {
-        this.store.update((st) => {
-          const cur = st.tasks.find((x) => x.id === t.id);
+      const e = await this.llm.estimate(t, this.state.tasks, focusFor(focus, t.course));
+      if (e.source === "llm") refined.push([t.id, e]);
+    }
+    if (refined.length) {
+      this.store.update((st) => {
+        const byId = new Map(st.tasks.map((x) => [x.id, x]));
+        for (const [id, e] of refined) {
+          const cur = byId.get(id);
           if (cur && cur.human_minutes == null) applyEstimate(cur, e, st.rules.block_min, st.rules.min_block_min);
-          this.replanInto(st);
-        });
-      }
+        }
+        this.replanInto(st);
+      });
     }
     return todo.length;
   }

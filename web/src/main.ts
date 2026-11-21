@@ -984,6 +984,11 @@ function openModelSheet() {
   const gpuNote = h("div", { class: "gpu-note", hidden: true });
 
   const cards = new Map<string, HTMLButtonElement>();
+  const unloadBtn = h("button", {
+    type: "button",
+    class: "btn ghost sm",
+    onclick: () => { llm.unload(); syncSelection(); render(); toast("Model unloaded from memory.", "ok"); },
+  }, "Unload");
   const syncSelection = () => {
     const m = MODELS.find((x) => x.id === selected) ?? MODELS[0];
     thinkRow.hidden = !m.thinks;
@@ -994,34 +999,58 @@ function openModelSheet() {
       ? `Active: ${llmStatus.provider ?? "AI"} · ${llmStatus.modelLabel ?? llmStatus.model}`
       : llmStatus.state === "loading" ? llmStatus.text
         : "Active: Built-in rules (no LLM loaded)";
+    unloadBtn.hidden = llmStatus.state !== "ready";
     banner.replaceChildren(
-      h("span", { class: `sync-dot ${llmStatus.state === "ready" ? "synced" : llmStatus.state === "loading" ? "syncing" : ""}` }),
-      h("strong", null, activeTxt),
+      h("div", { class: "ai-banner-left" },
+        h("span", { class: `sync-dot ${llmStatus.state === "ready" ? "synced" : llmStatus.state === "loading" ? "syncing" : ""}` }),
+        h("strong", null, activeTxt)),
+      unloadBtn,
     );
   };
 
+  let showAllBrowser = false;
   const closeRef: { fn: () => void } = { fn: () => {} };
+  const makeCard = (m: typeof MODELS[number]) => {
+    const isActive = llmStatus.state === "ready" && llmStatus.model === m.id;
+    const sub = m.backend === "native"
+      ? relayMeta
+      : h("span", { class: "muted small" }, `${(m.vram / 1000).toFixed(1)} GB VRAM${m.note ? ` · ${m.note}` : ""}`);
+    const btn = h("button", {
+      type: "button",
+      class: `model-card ${m.backend === "native" ? "hero" : ""} ${m.id === selected ? "selected" : ""} ${isActive ? "active" : ""}`,
+      onclick: () => { selected = m.id; syncSelection(); },
+    },
+      h("div", { class: "row", style: "justify-content:space-between;align-items:center;width:100%;gap:8px" },
+        h("strong", null, m.label),
+        isActive ? h("span", { class: "pill warm" }, "Running") : h("span", { class: "pill" }, m.backend === "native" ? "0 MB" : m.size)),
+      sub);
+    cards.set(m.id, btn);
+    return btn;
+  };
+  const extraGroups = (["Small & fast", "Bigger & smarter"] as const).map((g) => h("div", { class: "model-group", hidden: true },
+    h("div", { class: "model-group-title" }, g),
+    h("div", { class: "model-grid" }, MODELS.filter((m) => m.group === g).map(makeCard))));
+  const extraCount = MODELS.filter((m) => m.group === "Small & fast" || m.group === "Bigger & smarter").length;
+  const moreBtn = h("button", {
+    type: "button",
+    class: "btn ghost sm",
+    style: "justify-self:start",
+    onclick: () => {
+      showAllBrowser = !showAllBrowser;
+      for (const el of extraGroups) el.hidden = !showAllBrowser;
+      moreBtn.textContent = showAllBrowser ? "Hide extra browser models" : `Show ${extraCount} more browser models…`;
+    },
+  }, `Show ${extraCount} more browser models…`);
+
   const listWrap = h("div", { class: "model-groups" },
-    (["Through your relay", "Recommended", "Small & fast", "Bigger & smarter"] as const).map((g) => {
-      const items = MODELS.filter((m) => m.group === g);
-      return h("div", { class: "model-group" },
-        h("div", { class: "model-group-title" }, g === "Through your relay" ? "Relay AI (0 MB browser download)" : g),
-        h("div", { class: "model-grid" }, items.map((m) => {
-          const isActive = llmStatus.state === "ready" && llmStatus.model === m.id;
-          const sub = m.backend === "native" ? relayMeta : h("span", { class: "muted small" }, `${m.size} · ${(m.vram / 1000).toFixed(1)} GB VRAM${m.note ? ` · ${m.note}` : ""}`);
-          const btn = h("button", {
-            type: "button",
-            class: `model-card ${m.id === selected ? "selected" : ""} ${isActive ? "active" : ""}`,
-            onclick: () => { selected = m.id; syncSelection(); },
-          },
-            h("div", { class: "row", style: "justify-content:space-between;width:100%" },
-              h("strong", null, m.label),
-              isActive ? h("span", { class: "pill warm" }, "Running") : h("span", { class: "pill" }, m.backend === "native" ? "Relay" : m.size)),
-            sub);
-          cards.set(m.id, btn);
-          return btn;
-        })));
-    }),
+    h("div", { class: "model-group" },
+      h("div", { class: "model-group-title" }, "Relay AI (instant · zero lag)"),
+      h("div", { class: "model-grid" }, MODELS.filter((m) => m.group === "Through your relay").map(makeCard))),
+    h("div", { class: "model-group" },
+      h("div", { class: "model-group-title" }, "In-Browser WebGPU"),
+      h("div", { class: "model-grid" }, MODELS.filter((m) => m.group === "Recommended").map(makeCard))),
+    moreBtn,
+    ...extraGroups,
   );
 
   void LLMClient.nativeStatus(token).then((st) => {
