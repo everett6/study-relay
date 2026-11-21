@@ -6,6 +6,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"embed"
@@ -240,6 +241,27 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable") // hashed by Vite
 	} else {
 		w.Header().Set("Cache-Control", "no-cache")
+	}
+	if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") &&
+		(strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".html")) {
+		if data, err := fs.ReadFile(s.static, p); err == nil {
+			ct := "application/octet-stream"
+			switch {
+			case strings.HasSuffix(p, ".js"):
+				ct = "text/javascript; charset=utf-8"
+			case strings.HasSuffix(p, ".css"):
+				ct = "text/css; charset=utf-8"
+			case strings.HasSuffix(p, ".html"):
+				ct = "text/html; charset=utf-8"
+			}
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Content-Encoding", "gzip")
+			w.Header().Set("Vary", "Accept-Encoding")
+			gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+			_, _ = gz.Write(data)
+			_ = gz.Close()
+			return
+		}
 	}
 	http.ServeFileFS(w, r, s.static, p)
 }

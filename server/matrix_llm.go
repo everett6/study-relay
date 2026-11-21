@@ -152,7 +152,7 @@ func (s *Server) runPiMatrixBatch(ctx context.Context) (int, error) {
 	cmd := exec.CommandContext(bCtx, "ionice", "-c", "3", "nice", "-n", "19", "taskset", "-c", "3",
 		s.cfg.MatrixLlamaBin, "-m", s.cfg.MatrixGGUFPath,
 		"--host", "127.0.0.1", "--port", portStr,
-		"-c", "1024", "-t", "1", "--log-disable")
+		"-c", "1024", "-t", "1", "-np", "1", "--no-warmup", "--log-disable")
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start ephemeral llama-server: %w", err)
 	}
