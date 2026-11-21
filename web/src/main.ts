@@ -1055,7 +1055,9 @@ function openModelSheet() {
 
   void LLMClient.nativeStatus(token).then((st) => {
     if (!st.ok) {
-      relayMeta.textContent = "Not connected — click Configure below for OpenRouter / OpenAI / Ollama";
+      relayMeta.textContent = st.error
+        ? `Not ready: ${st.error}`
+        : "Not connected — click Configure below for OpenRouter / OpenAI / Ollama";
       return;
     }
     const prov = st.url?.includes("openrouter.ai") ? "OpenRouter"
@@ -1232,8 +1234,8 @@ async function openConnections() {
   const llmKey = h("input", { type: "password", placeholder: savedHint(cfg.local_llm_key_configured, "API key (blank for local Ollama)"), autocomplete: "off" });
   const llmCtx = h("input", { type: "number", min: "2048", max: "131072", step: "1024", value: String(cfg.local_llm_ctx ?? 32768) });
   const llmPreset = h("select", { onchange: () => {
-    if (llmPreset.value === "openrouter-free") { llmUrl.value = "https://openrouter.ai/api/v1"; llmModel.value = "google/gemma-4-31b-it:free"; llmCtx.value = "32768"; }
-    else if (llmPreset.value === "openrouter-luna") { llmUrl.value = "https://openrouter.ai/api/v1"; llmModel.value = "openai/gpt-6-luna"; llmCtx.value = "32768"; }
+    if (llmPreset.value === "openrouter-free") { llmUrl.value = "https://openrouter.ai/api/v1"; llmModel.value = "google/gemma-4-31b-it:free"; llmCtx.value = "32768"; if (!cfg.local_llm_key_configured) llmKey.placeholder = "Paste OpenRouter API key (sk-or-...) — required even for :free"; }
+    else if (llmPreset.value === "openrouter-luna") { llmUrl.value = "https://openrouter.ai/api/v1"; llmModel.value = "openai/gpt-6-luna"; llmCtx.value = "32768"; if (!cfg.local_llm_key_configured) llmKey.placeholder = "Paste OpenRouter API key (sk-or-...)"; }
     else if (llmPreset.value === "luna") { llmUrl.value = "https://api.openai.com/v1"; llmModel.value = "gpt-6-luna"; }
     else if (llmPreset.value === "azure-luna") { llmUrl.value = "https://YOUR-RESOURCE.openai.azure.com/openai/v1"; llmModel.value = "gpt-6-luna"; }
     else if (llmPreset.value === "ollama") { llmUrl.value = "http://127.0.0.1:11434/v1"; llmModel.value = "lfm2.5"; llmCtx.value = "32768"; }

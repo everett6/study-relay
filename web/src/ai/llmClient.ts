@@ -318,7 +318,7 @@ export class LLMClient {
   }
 
   /** Check if the local/cloud Relay AI server (/api/llm/status) is reachable. */
-  static async nativeStatus(token = ""): Promise<{ ok: boolean; model?: string; context_window?: number; url?: string; cloud?: boolean }> {
+  static async nativeStatus(token = ""): Promise<{ ok: boolean; model?: string; context_window?: number; url?: string; cloud?: boolean; error?: string }> {
     try {
       const headers: Record<string, string> = token ? { "X-Relay-Token": token } : {};
       const r = await fetch("/api/llm/status", { headers });
@@ -338,7 +338,7 @@ export class LLMClient {
       this.set({ state: "loading", progress: 0.2, text: "Connecting to Relay AI…", model });
       const st = await LLMClient.nativeStatus(opts.token);
       if (!st.ok) {
-        this.set({ state: "error", text: "Relay AI unreachable (check Settings → Connections or Ollama)." });
+        this.set({ state: "error", text: st.error ? `Relay AI: ${st.error}` : "Relay AI unreachable (check Settings → Connections or Ollama)." });
         return false;
       }
       const url = st.url ?? "";
