@@ -1131,7 +1131,7 @@ async function useRelayAI(): Promise<boolean> {
 function openModelSheet() {
   const token = localStorage.getItem("relay_token") ?? "";
   let selected = localStorage.getItem("llm_model") || MODELS[0].id;
-  const think = h("input", { type: "checkbox", checked: localStorage.getItem("llm_thinking") === "1" });
+  const think = h("input", { type: "checkbox", checked: localStorage.getItem("llm_thinking") !== "0" });
   const thinkRow = h("label", { class: "toggle" }, think, h("span", null, "Think before answering (more accurate, slower)"));
 
   const banner = h("div", { class: "ai-banner" });
@@ -1726,12 +1726,12 @@ async function openSetupWizard() {
             await loadIntegrations();
   if (llm.status.state === "off") {
     const saved = localStorage.getItem("llm_model");
-    if (!saved || saved === "native") {
-      const tok = localStorage.getItem("relay_token") ?? "";
-      void LLMClient.nativeStatus(tok).then((st) => {
-        if (st.ok) void llm.load("native", { token: tok });
-      });
-    }
+    const tok = localStorage.getItem("relay_token") ?? "";
+    void LLMClient.nativeStatus(tok).then(async (st) => {
+      if (st.ok && (!saved || saved === "native" || !(await LLMClient.supported()))) {
+        void llm.load("native", { token: tok, thinking: localStorage.getItem("llm_thinking") !== "0" });
+      }
+    });
   }
             if (integrations.canvas_server_token) void doCanvasSync();
           } }, "Finish")));
@@ -1764,12 +1764,12 @@ document.addEventListener("keydown", (e) => {
   await loadIntegrations();
   if (llm.status.state === "off") {
     const saved = localStorage.getItem("llm_model");
-    if (!saved || saved === "native") {
-      const tok = localStorage.getItem("relay_token") ?? "";
-      void LLMClient.nativeStatus(tok).then((st) => {
-        if (st.ok) void llm.load("native", { token: tok });
-      });
-    }
+    const tok = localStorage.getItem("relay_token") ?? "";
+    void LLMClient.nativeStatus(tok).then(async (st) => {
+      if (st.ok && (!saved || saved === "native" || !(await LLMClient.supported()))) {
+        void llm.load("native", { token: tok, thinking: localStorage.getItem("llm_thinking") !== "0" });
+      }
+    });
   }
   if (!/\b401\b|bad relay token/.test(store.lastError) && (location.pathname === "/setup" || (!integrations.canvas_server_token && !store.state.tasks.length && !localStorage.getItem("setup_done")))) {
     void openSetupWizard();

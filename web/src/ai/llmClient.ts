@@ -292,8 +292,8 @@ export class LLMClient {
   private engine: Engine | null = null;
   private activeWorker: Worker | null = null;
   private onChange: (s: LLMStatus) => void;
-  /** LFM3 reasons before answering by default; off keeps replies fast. */
-  thinking = false;
+  /** Reasoning/thinking enabled by default for Relay AI & thinking-capable models. */
+  thinking = true;
   /** Last raw model reply (for the benchmark page). */
   lastRaw = "";
   /** Last model thinking/reasoning trace (from <think> tags or OpenRouter reasoning). */
@@ -355,6 +355,7 @@ export class LLMClient {
     try { localStorage.setItem("llm_model", model); } catch { /* ignore */ }
     const backend = MODELS.find((m) => m.id === model)?.backend ?? "webllm";
     if (backend === "native") {
+      this.thinking = opts.thinking ?? true;
       this.set({ state: "loading", progress: 0.2, text: "Connecting to Relay AI…", model });
       const st = await LLMClient.nativeStatus(opts.token);
       if (!st.ok) {
@@ -505,7 +506,11 @@ export class LLMClient {
       if (!raw.length) raw = validateCalls(salvageCalls(this.lastRaw));
       const want = intendedTools(text);
       const modelCalls = raw.filter((c) => want.has(c.tool));
-      const reply = typeof j?.reply === "string" ? j.reply.slice(0, 300) : "";
+      let reply = typeof j?.reply === "string" ? j.reply.slice(0, 400) : "";
+      if (!reply && !modelCalls.length && this.lastRaw) {
+        const cleaned = this.lastRaw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+        if (cleaned && !cleaned.startsWith("{")) reply = cleaned.slice(0, 400);
+      }
       const calls = mergeCalls(modelCalls, rules, text);
       this.chatHistory.push({ role: "user", content: text });
       if (reply || calls.length) {
@@ -513,8 +518,8 @@ export class LLMClient {
       }
       this.saveHistory();
       return { calls, modelCalls, reply, thinking: this.lastThinking, via: calls.some((c) => modelCalls.includes(c)) ? "llm" : "rules" };
-    } catch {
-      return { calls: rules, modelCalls: [], reply: "", thinking: this.lastThinking, via: "rules" };
+    } catch (e) {
+      return { calls: rules, modelCalls: [], reply: rules.length ? "" : `AI error: ${String(e).slice(0, 180)}`, thinking: this.lastThinking, via: "rules" };
     }
   }
 

@@ -40,7 +40,14 @@ func localLLMConfig(cfg Config) (baseURL, model string, ctxLen int, apiKey strin
 		}
 	}
 	if ctxLen <= 0 {
-		ctxLen = 32768
+		if isCloudLLM(baseURL) {
+			ctxLen = 128000
+		} else {
+			ctxLen = 32768
+		}
+	}
+	if isCloudLLM(baseURL) && ctxLen < 100000 {
+		ctxLen = 100000
 	}
 	switch {
 	case strings.Contains(baseURL, "openrouter.ai"):
@@ -82,10 +89,17 @@ func isCloudLLM(baseURL string) bool {
 // while keeping full configured context for free local inference (apiKey == "").
 func pricingTierCtxCap(baseURL, model string, configured int, isCloud bool) (int, string) {
 	if configured <= 0 {
-		configured = 32768
+		if isCloud {
+			configured = 128000
+		} else {
+			configured = 32768
+		}
 	}
 	if !isCloud {
 		return configured, "local"
+	}
+	if configured < 100000 {
+		configured = 100000
 	}
 	m := strings.ToLower(model)
 	switch {
@@ -100,11 +114,10 @@ func pricingTierCtxCap(baseURL, model string, configured int, isCloud bool) (int
 		}
 		return configured, "standard tier"
 	default:
-		// OpenRouter / OpenAI / open-weight cloud models: keep <= 32K to avoid long-context surcharges & TPM limits.
-		if configured > 32768 {
-			return 32768, "capped at 32K (cost-safe cloud window)"
+		if configured > 128000 {
+			return 128000, "128K cloud window (100K min)"
 		}
-		return configured, "cost-safe cloud window"
+		return configured, "100K+ cloud window"
 	}
 }
 
@@ -241,8 +254,8 @@ func (s *Server) localLLMChatHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(in.ResponseFormat) > 0 {
 		payload["response_format"] = in.ResponseFormat
-		if strings.Contains(baseURL, "openrouter.ai") && maxTok < 1200 {
-			payload["max_tokens"] = 1200
+		if strings.Contains(baseURL, "openrouter.ai") && maxTok < 1600 {
+			payload["max_tokens"] = 1600
 		}
 	}
 	if apiKey == "" {
@@ -251,6 +264,8 @@ func (s *Server) localLLMChatHTTP(w http.ResponseWriter, r *http.Request) {
 		if in.EnableThinking == nil || !*in.EnableThinking {
 			payload["reasoning_effort"] = "none"
 		}
+	} else if strings.Contains(baseURL, "openrouter.ai") && (in.EnableThinking == nil || *in.EnableThinking) {
+		payload["reasoning"] = map[string]any{"enabled": true}
 	}
 	raw, _ := json.Marshal(payload)
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)

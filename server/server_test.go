@@ -817,8 +817,11 @@ func TestMCPExtendedToolsResourcesPrompts(t *testing.T) {
 	if c, _ := pricingTierCtxCap("https://openrouter.ai/api/v1", "google/gemini-2.5-pro", 1000000, true); c != 128000 {
 		t.Fatalf("gemini cap = %d", c)
 	}
-	if c, _ := pricingTierCtxCap("https://openrouter.ai/api/v1", "google/gemma-4-31b-it:free", 131072, true); c != 32768 {
+	if c, _ := pricingTierCtxCap("https://openrouter.ai/api/v1", "google/gemma-4-31b-it:free", 131072, true); c != 128000 {
 		t.Fatalf("openrouter cap = %d", c)
+	}
+	if c, _ := pricingTierCtxCap("https://openrouter.ai/api/v1", "openrouter/free", 32768, true); c != 100000 {
+		t.Fatalf("openrouter min cap = %d", c)
 	}
 	if c, _ := pricingTierCtxCap("http://127.0.0.1:11434/v1", "lfm2.5", 65536, false); c != 65536 {
 		t.Fatalf("local cap = %d", c)
