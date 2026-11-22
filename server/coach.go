@@ -41,12 +41,19 @@ func localLLMConfig(cfg Config) (baseURL, model string, ctxLen int, apiKey strin
 	if ctxLen <= 0 {
 		ctxLen = 32768
 	}
-	apiKey = strings.TrimSpace(cfg.LocalLLMAPIKey)
+	switch {
+	case strings.Contains(baseURL, "openrouter.ai"):
+		apiKey = strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
+	case strings.Contains(baseURL, "azure.com"):
+		apiKey = strings.TrimSpace(os.Getenv("AZURE_OPENAI_API_KEY"))
+	case strings.Contains(baseURL, "api.openai.com"):
+		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	}
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(cfg.LocalLLMAPIKey)
+	}
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("LOCAL_LLM_API_KEY"))
-	}
-	if apiKey == "" && strings.Contains(baseURL, "openrouter.ai") {
-		apiKey = strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
 	}
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))

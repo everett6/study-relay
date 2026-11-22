@@ -273,6 +273,10 @@ func (s *Server) getIntegrationsConfigHTTP(w http.ResponseWriter, _ *http.Reques
 		"local_llm_model":            model,
 		"local_llm_ctx":              ctxLen,
 		"local_llm_key_configured":   apiKey != "",
+		"openrouter_key_configured":  strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "",
+		"openai_key_configured":      strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "",
+		"azure_key_configured":       strings.TrimSpace(os.Getenv("AZURE_OPENAI_API_KEY")) != "",
+		"local_key_configured":       strings.TrimSpace(os.Getenv("LOCAL_LLM_API_KEY")) != "",
 	})
 }
 
@@ -341,6 +345,7 @@ func (s *Server) saveIntegrationsConfigHTTP(w http.ResponseWriter, r *http.Reque
 		LocalLLMModel   string `json:"local_llm_model"`
 		LocalLLMCtx     int    `json:"local_llm_ctx"`
 		LocalLLMAPIKey  string `json:"local_llm_api_key"`
+		LLMProvider     string `json:"llm_provider"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 32<<10)).Decode(&in); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid json")
@@ -386,7 +391,17 @@ func (s *Server) saveIntegrationsConfigHTTP(w http.ResponseWriter, r *http.Reque
 	set("DISCORD_WEBHOOK_URL", in.DiscordWebhook)
 	set("LOCAL_LLM_URL", in.LocalLLMURL)
 	set("LOCAL_LLM_MODEL", in.LocalLLMModel)
-	set("LOCAL_LLM_API_KEY", in.LocalLLMAPIKey)
+	provider := strings.ToLower(strings.TrimSpace(in.LLMProvider))
+	switch provider {
+	case "openrouter":
+		set("OPENROUTER_API_KEY", in.LocalLLMAPIKey)
+	case "openai":
+		set("OPENAI_API_KEY", in.LocalLLMAPIKey)
+	case "azure":
+		set("AZURE_OPENAI_API_KEY", in.LocalLLMAPIKey)
+	default:
+		set("LOCAL_LLM_API_KEY", in.LocalLLMAPIKey)
+	}
 	if in.LocalLLMCtx >= 1024 {
 		updates["LOCAL_LLM_CTX"] = fmt.Sprintf("%d", in.LocalLLMCtx)
 	}

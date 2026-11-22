@@ -38,7 +38,7 @@ func TestRelayTokenDefaults(t *testing.T) {
 }
 
 func TestOpenRouterKeyFallback(t *testing.T) {
-	t.Setenv("LOCAL_LLM_API_KEY", "")
+	t.Setenv("LOCAL_LLM_API_KEY", "legacy-generic-key")
 	t.Setenv("OPENAI_API_KEY", "sk-openai")
 	t.Setenv("OPENROUTER_API_KEY", "sk-or")
 	t.Setenv("LOCAL_LLM_URL", "https://openrouter.ai/api/v1")
@@ -48,6 +48,11 @@ func TestOpenRouterKeyFallback(t *testing.T) {
 	t.Setenv("LOCAL_LLM_URL", "https://api.openai.com/v1")
 	if _, _, _, k := localLLMConfig(Config{}); k != "sk-openai" {
 		t.Fatalf("openai url should use OPENAI_API_KEY, got %q", k)
+	}
+	t.Setenv("AZURE_OPENAI_API_KEY", "az-test")
+	t.Setenv("LOCAL_LLM_URL", "https://resource.azure.com/openai/v1")
+	if _, _, _, k := localLLMConfig(Config{}); k != "az-test" {
+		t.Fatalf("azure url should use AZURE_OPENAI_API_KEY, got %q", k)
 	}
 }
 

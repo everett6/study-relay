@@ -295,6 +295,52 @@ textarea { resize: vertical; line-height: 1.5; }
 @media (min-width: 700px) { .scrim { place-items: center; } .sheet { border-radius: 26px; } }
 @keyframes sheet-up { from { transform: translateY(40px); opacity: 0; } }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; }
+.sheet.connections-sheet { width: min(980px, calc(100% - 32px)); max-height: min(92dvh, 900px); padding: 22px 26px 20px; gap: 12px; }
+.connections-sheet .sheet-head { position: sticky; top: -22px; z-index: 2; padding: 2px 0 8px; background: var(--card-solid); }
+.connections-sheet .sheet-head h2 { font-size: 1.35rem; letter-spacing: -0.025em; }
+.connections-form { display: grid; gap: 14px; }
+.connections-intro { color: var(--muted); font-size: 0.92rem; }
+.connection-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 5px; border: 1px solid var(--line); border-radius: 15px; background: var(--bg); }
+.connection-tab { display: grid; gap: 2px; min-width: 0; padding: 10px 12px; border: 0; border-radius: 11px; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
+.connection-tab-name { color: var(--ink); font-size: .9rem; font-weight: 750; }
+.connection-tab small { overflow: hidden; color: var(--muted); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+.connection-tab.on { background: var(--card-solid); box-shadow: var(--shadow); }
+.connection-tab.on .connection-tab-name { color: var(--accent-ink); }
+.connection-tab:focus-visible { outline-offset: -2px; }
+.connection-panels, .connection-panel { min-width: 0; }
+.connection-card { width: min(100%, 760px); min-width: 0; margin: 0 auto; display: grid; align-content: start; gap: 13px; padding: 20px; border: 1px solid var(--line); border-radius: 18px;
+  background: color-mix(in srgb, var(--line) 16%, var(--card-solid)); }
+.connection-card-head { display: flex; align-items: center; gap: 12px; margin-bottom: 2px; }
+.connection-card-head h3 { font-size: 1rem; line-height: 1.25; }
+.connection-card-head p { margin-top: 3px; color: var(--muted); font-size: 0.82rem; }
+.connection-icon { display: grid; place-items: center; width: 42px; height: 42px; flex: none; border-radius: 13px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--card-solid)); color: var(--accent-ink); }
+.connection-icon .ico svg { width: 19px; height: 19px; }
+.connection-card.discord .connection-icon { background: color-mix(in srgb, var(--violet) 13%, var(--card-solid)); color: var(--violet); }
+.connection-card.canvas .connection-icon { background: color-mix(in srgb, var(--teal) 13%, var(--card-solid)); color: var(--teal); }
+.connection-card.relay .connection-icon { background: color-mix(in srgb, var(--orange) 15%, var(--card-solid)); color: var(--warn); }
+.connection-card label { min-width: 0; }
+.provider-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.provider-choice { display: grid; gap: 3px; min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--card-solid); color: var(--ink); text-align: left; cursor: pointer; }
+.provider-choice span { overflow: hidden; font-size: .86rem; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.provider-choice small { color: var(--muted); font-size: .72rem; }
+.provider-choice.on { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, var(--card-solid)); }
+.provider-choice.on span, .provider-choice.on small { color: var(--accent-ink); }
+.connection-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(110px, .34fr); gap: 12px; }
+.connection-fields label { min-width: 0; }
+.connection-fields .connection-full { grid-column: 1 / -1; }
+.connection-context input { width: 100%; }
+.provider-key-status { display: flex; align-items: flex-start; gap: 9px; margin: 0; padding: 11px 12px; border-radius: 11px; font-size: .84rem; line-height: 1.45; }
+.provider-key-status.saved { background: color-mix(in srgb, var(--ok) 9%, var(--card-solid)); color: var(--ok); }
+.provider-key-status.empty { background: color-mix(in srgb, var(--warn) 9%, var(--card-solid)); color: var(--warn); }
+.provider-key-dot { width: 8px; height: 8px; flex: none; margin-top: 5px; border-radius: 50%; background: currentColor; }
+.provider-note { color: var(--muted); font-size: .82rem; }
+.connections-actions { position: sticky; bottom: -20px; z-index: 2; display: flex; justify-content: space-between; align-items: center; gap: 14px;
+  margin: 0 -2px -20px; padding: 14px 2px 20px; background: var(--card-solid); border-top: 1px solid var(--line); }
+.connections-security-note { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: .8rem; }
+.connections-security-note .ico { color: var(--ok); }
+.connections-security-note .ico svg { width: 16px; height: 16px; }
 .choice { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .choice button { display: grid; gap: 4px; justify-items: center; padding: 12px; border-radius: 16px; border: 2px solid var(--line); background: transparent; font-weight: 700; cursor: pointer;
   transition: border-color 0.2s, transform 0.2s var(--spring); }
@@ -374,6 +420,15 @@ body.dropping::after { content: "Drop a screenshot to read it"; position: fixed;
   .greet { font-size: 1.2rem; } .chip.model > span:not(.ico) { display: none; }
   .week { display: none; }
   .week-mobile { display: block; padding: 14px; }
+  .sheet.connections-sheet { width: 100%; max-height: 94dvh; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); border-radius: 22px 22px 0 0; }
+  .connections-sheet .sheet-head { top: -16px; }
+  .connection-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .connection-tab { padding: 9px 10px; }
+  .connection-card { padding: 16px; }
+  .provider-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .connections-actions { align-items: stretch; flex-direction: column; bottom: calc(-16px - env(safe-area-inset-bottom)); margin: 0 -2px calc(-16px - env(safe-area-inset-bottom)); padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+  .connections-actions .row { width: 100%; }
+  .connections-actions .row .btn { flex: 1; }
 }
 
 .check-row { display: grid; gap: 2px; padding: 10px 12px; border-radius: 14px; background: var(--line); animation: rise 0.4s var(--ease) both; }

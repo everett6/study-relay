@@ -129,6 +129,7 @@ Exposes **20 tools**, **4 resources** (`study://schedule/today`, `study://tasks/
   ./install-desktop-app.sh   # installs "Study Flow" to ~/.local/share/applications/
   ```
   Env vars for native local inference: `LOCAL_LLM_URL` (default `http://127.0.0.1:11434/v1`), `LOCAL_LLM_MODEL` (default `lfm2.5`), `LOCAL_LLM_CTX` (default `32768`), `LOCAL_LLM_API_KEY`. For gpt-6-luna through OpenRouter use URL `https://openrouter.ai/api/v1`, model `openai/gpt-6-luna` and your OpenRouter key (`OPENROUTER_API_KEY` also works).
+- **Connection setup:** Settings → Connect services separates Email, Discord, Canvas, and AI model provider settings. Choose OpenRouter, OpenAI, Azure OpenAI, or Local/custom under AI. API keys are saved to the relay server's `.env` file with mode `0600`; blank key fields keep the saved key, and provider keys are stored separately. The browser only receives whether a key is configured, never the key itself.
 - **Docker / VPS hosting:**
   ```bash
   docker compose up -d --build
