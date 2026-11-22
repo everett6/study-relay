@@ -83,9 +83,13 @@ function render() {
     const dot = document.getElementById("sync")!;
     dot.className = `sync-dot ${store.status}`;
     dot.title = store.status === "synced" ? "Synced with relay" : store.status === "offline" ? `Offline: changes are saved and will sync (${store.lastError})` : "Syncing…";
-    if (/\b401\b|bad relay token/.test(store.lastError) && !tokenHintShown) {
-      tokenHintShown = true;
-      openPairSheet();
+    if (/\b401\b|bad relay token/.test(store.lastError)) {
+      main.replaceChildren();
+      if (!tokenHintShown) {
+        tokenHintShown = true;
+        openLoginSheet();
+      }
+      return;
     }
     const newCount = s.inbox.filter((i) => i.status === "new").length + s.drafts.filter((d) => d.status === "draft").length;
     const badge = document.getElementById("inbox-badge")!;
@@ -1125,62 +1129,63 @@ function openModelSheet() {
   ), { onClose: () => clearInterval(unsub) });
 }
 
-function openPairSheet() {
+function openLoginSheet() {
   const userInp = h("input", { type: "text", placeholder: "Username", autocomplete: "username" });
   const passInp = h("input", { type: "password", placeholder: "Password", autocomplete: "current-password" });
-  const tokInp = h("input", { type: "password", value: localStorage.getItem("relay_token") ?? "", placeholder: "Paste relay token or #pair=... link", autocomplete: "off" });
   const errLine = h("p", { class: "muted small", style: "color:var(--danger)", hidden: true });
+  const submitBtn = h("button", { type: "submit", class: "btn primary" }, "Sign in");
   const close = sheet("Sign in to Study Flow", h("form", { class: "stack", onsubmit: async (e: Event) => {
     e.preventDefault();
     errLine.hidden = true;
-    let tok = tokInp.value.trim();
-    const m = tok.match(/#pair=([^&\s]+)/);
-    if (m) tok = decodeURIComponent(m[1]);
-    if (!tok && userInp.value.trim() && passInp.value) {
+    const u = userInp.value.trim();
+    const p = passInp.value;
+    if (!u || !p) {
+      errLine.textContent = "Enter your username and password.";
+      errLine.hidden = false;
+      return;
+    }
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Signing in…";
+    try {
       const r = await fetch("/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: userInp.value.trim(), password: passInp.value }),
+        body: JSON.stringify({ username: u, password: p }),
       });
       const j = await r.json().catch(() => ({})) as { ok?: boolean; token?: string; error?: string };
       if (!r.ok || !j.token) {
         errLine.textContent = j.error || "Invalid username or password";
         errLine.hidden = false;
+        passInp.value = "";
+        passInp.focus();
         return;
       }
-      tok = j.token;
-    }
-    if (!tok) {
-      errLine.textContent = "Enter your username and password.";
-      errLine.hidden = false;
-      return;
-    }
-    localStorage.setItem("relay_token", tok);
-    close();
-    await store.pull();
-    if (/\b401\b|bad relay token/.test(store.lastError)) {
-      toast("That relay token didn't match.", "warn");
-    } else {
-      toast("Signed in and synced!", "ok");
+      localStorage.setItem("relay_token", j.token);
+      store.lastError = "";
+      tokenHintShown = false;
+      close();
+      await store.pull();
+      if (/\b401\b|bad relay token/.test(store.lastError)) {
+        localStorage.removeItem("relay_token");
+        openLoginSheet();
+        return;
+      }
       void loadIntegrations();
       render();
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Sign in";
     }
   } },
     h("label", null, "Username", userInp),
     h("label", null, "Password", passInp),
     errLine,
-    h("details", { class: "muted small" },
-      h("summary", null, "Or paste a relay token"),
-      h("div", { style: "margin-top:8px" }, tokInp)),
-    h("div", { class: "row end" },
-      h("button", { type: "button", class: "btn ghost", onclick: () => close() }, "Stay offline"),
-      h("button", { type: "submit", class: "btn primary" }, "Sign in"))));
+    h("div", { class: "row end" }, submitBtn)), { locked: true });
   userInp.focus();
 }
 
 function openSettings() {
   const s = store.state;
-  const relay = h("input", { type: "password", value: localStorage.getItem("relay_token") ?? "", placeholder: "filled in by the pairing link", autocomplete: "off" });
   const ics = h("input", { value: localStorage.getItem("ics_url") ?? "", placeholder: "https://esuhsd.instructure.com/feeds/calendars/user_….ics" });
   const motion = h("input", { type: "checkbox", checked: localStorage.getItem("motion") !== "off" });
   const targets = s.buckets.filter((b) => b.key !== SCHOOL).map((b) => {
@@ -1230,18 +1235,17 @@ function openSettings() {
     h("h3", null, "Connections"),
     h("button", { type: "button", class: "btn", onclick: () => { close(); void openConnections(); } }, "Connect Discord, Gmail, Canvas & AI…"),
     h("label", null, "Canvas calendar feed (fallback)", ics),
-    h("label", null, "Relay token", relay),
     h("label", { class: "toggle" }, motion, h("span", null, "Animations")),
     h("div", { class: "row wrap", style: "justify-content:space-between" },
       h("div", { class: "row" },
         h("button", { type: "button", class: "btn ghost sm", onclick: () => { const n = engine.clearSampleData(); toast(n ? `Cleared ${n} sample task(s).` : "No sample data found.", "ok"); } }, "Clear sample data"),
+        h("button", { type: "button", class: "btn ghost sm", onclick: () => { localStorage.removeItem("relay_token"); close(); openLoginSheet(); } }, "Sign out"),
         h("button", { type: "button", class: "btn ghost sm danger", onclick: async () => {
           if (!(await confirmSheet("Reset all data?", "Clears all tasks, blocks, and sessions to start fresh.", "Reset everything"))) return;
           await api("/api/account/reset", { method: "POST" });
           location.reload();
         } }, "Reset all")),
       h("button", { class: "btn primary", onclick: () => {
-      localStorage.setItem("relay_token", relay.value.trim());
       localStorage.setItem("ics_url", ics.value.trim());
       localStorage.setItem("motion", motion.checked ? "on" : "off");
       document.documentElement.dataset.motion = motion.checked ? "on" : "off";
@@ -1487,7 +1491,7 @@ let tokenHintShown = false;
   if (m) {
     localStorage.setItem("relay_token", m[1]);
     history.replaceState(null, "", location.pathname + location.search);
-    setTimeout(() => toast("This device is now signed in to your relay.", "ok"), 600);
+    setTimeout(() => toast("Signed in.", "ok"), 600);
   }
 }
 store.subscribe(() => render());

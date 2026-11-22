@@ -3,6 +3,9 @@
 type Child = Node | string | number | null | undefined | false | Child[];
 type Props = Record<string, unknown> | null;
 
+let openSheetCount = 0;
+let previousDocumentOverflow = "";
+
 export function h<K extends keyof HTMLElementTagNameMap>(tag: K, props?: Props, ...kids: Child[]): HTMLElementTagNameMap[K] {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props ?? {})) {
@@ -82,14 +85,19 @@ export function toast(text: string, tone: "ok" | "warn" | "info" = "info", ms = 
 }
 
 // ------------------------------------------------------------------ sheets (bottom modal)
-export function sheet(title: string, body: Node, opts: { wide?: boolean; onClose?: () => void } = {}): () => void {
+export function sheet(title: string, body: Node, opts: { wide?: boolean; className?: string; focusSelector?: string; locked?: boolean; onClose?: () => void } = {}): () => void {
   const root = document.getElementById("overlay")!;
-  const card = h("div", { class: `sheet ${opts.wide ? "wide" : ""}`, role: "dialog", "aria-modal": "true", "aria-label": title },
-    h("div", { class: "sheet-head" }, h("h2", null, title), h("button", { class: "icon-btn", "aria-label": "Close", onclick: () => close() }, svg(ICON.x))),
+  if (openSheetCount === 0) {
+    previousDocumentOverflow = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+  }
+  openSheetCount++;
+  const card = h("div", { class: `sheet ${opts.wide ? "wide" : ""} ${opts.className ?? ""}`, role: "dialog", "aria-modal": "true", "aria-label": title },
+    h("div", { class: "sheet-head" }, h("h2", null, title), opts.locked ? null : h("button", { class: "icon-btn", "aria-label": "Close", onclick: () => close() }, svg(ICON.x))),
     body);
-  const scrim = h("div", { class: "scrim", onclick: (e: Event) => { if (e.target === scrim) close(); } }, card);
+  const scrim = h("div", { class: "scrim", onclick: (e: Event) => { if (!opts.locked && e.target === scrim) close(); } }, card);
   root.appendChild(scrim);
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  const onKey = (e: KeyboardEvent) => { if (!opts.locked && e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   let closed = false;
   function close() {
@@ -97,10 +105,14 @@ export function sheet(title: string, body: Node, opts: { wide?: boolean; onClose
     closed = true;
     document.removeEventListener("keydown", onKey);
     scrim.classList.add("out");
-    setTimeout(() => scrim.remove(), 260);
+    setTimeout(() => {
+      scrim.remove();
+      openSheetCount--;
+      if (openSheetCount === 0) document.documentElement.style.overflow = previousDocumentOverflow;
+    }, 260);
     opts.onClose?.();
   }
-  requestAnimationFrame(() => (card.querySelector("input,textarea,button.primary") as HTMLElement | null)?.focus());
+  requestAnimationFrame(() => (card.querySelector(opts.focusSelector ?? "input,textarea,button.primary") as HTMLElement | null)?.focus());
   return close;
 }
 
