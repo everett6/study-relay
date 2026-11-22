@@ -251,8 +251,6 @@ func (s *Server) localLLMChatHTTP(w http.ResponseWriter, r *http.Request) {
 		if in.EnableThinking == nil || !*in.EnableThinking {
 			payload["reasoning_effort"] = "none"
 		}
-	} else if strings.Contains(baseURL, "openrouter.ai") && (in.EnableThinking == nil || !*in.EnableThinking) {
-		payload["reasoning"] = map[string]any{"exclude": true}
 	}
 	raw, _ := json.Marshal(payload)
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
@@ -323,12 +321,14 @@ func (s *Server) localLLMChatHTTP(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadGateway, "empty LLM choices")
 		return
 	}
+	reasoning := strings.TrimSpace(out.Choices[0].Message.Reasoning)
 	content := out.Choices[0].Message.Content
 	if strings.TrimSpace(content) == "" {
-		content = out.Choices[0].Message.Reasoning
+		content = reasoning
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"content":        content,
+		"reasoning":      reasoning,
 		"model":          model,
 		"context_window": ctxLen,
 	})

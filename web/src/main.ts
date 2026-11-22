@@ -48,6 +48,7 @@ app.append(
         k === "inbox" ? h("b", { class: "badge", id: "inbox-badge" }) : null))),
   h("main", { id: "view", tabindex: "-1" }),
   h("div", { class: "dock" },
+    h("div", { id: "thinking-box", hidden: true }),
     h("form", { class: "ask", onsubmit: (e: Event) => { e.preventDefault(); void ask(); } },
       h("button", { type: "button", class: "icon-btn", "aria-label": "Add a screenshot", title: "Screenshot (or paste one anywhere)", onclick: pickImage }, svg(ICON.camera)),
       h("input", { id: "ask", placeholder: "Ask or tell me anything… “banquet at 7 tonight”", autocomplete: "off", "aria-label": "Message" }),
@@ -989,10 +990,31 @@ async function ask(textIn?: string, speak = false): Promise<Reply[]> {
   if (!text) return [];
   if (!textIn) input.value = "";
   const dock = document.querySelector(".dock")!;
+  const thinkBox = document.getElementById("thinking-box") as HTMLElement | null;
+  if (thinkBox) {
+    const who = llm.ready ? (llm.status.modelLabel ?? llm.status.model ?? "AI") : "Rules";
+    thinkBox.hidden = false;
+    thinkBox.replaceChildren(h("div", { class: "muted small", style: "padding:4px 10px" }, `Thinking with ${who}…`));
+  }
   dock.classList.add("thinking");
   try {
     const replies = await engine.run(text);
     for (const r of replies) toast(r.text, r.tone ?? "info");
+    if (thinkBox) {
+      const th = engine.lastThinking.trim();
+      if (th) {
+        thinkBox.hidden = false;
+        thinkBox.replaceChildren(
+          h("details", { style: "padding:4px 10px;font-size:12px" },
+            h("summary", { style: "cursor:pointer;color:var(--muted)" }, `Model thinking (${llm.chatHistory.length / 2} turns in context)`),
+            h("pre", { style: "white-space:pre-wrap;max-height:140px;overflow:auto;margin:6px 0 0;font-family:inherit;color:var(--muted)" }, th),
+            h("button", { type: "button", class: "btn ghost sm", style: "margin-top:4px", onclick: () => { llm.clearHistory(); thinkBox.hidden = true; toast("Chat context cleared.", "ok"); } }, "Clear context")),
+        );
+      } else {
+        thinkBox.hidden = true;
+        thinkBox.replaceChildren();
+      }
+    }
     if (speak) for (const r of replies) await voice.speak(r.text);
     if (replies.some((r) => /^Nice, .* is done/.test(r.text))) confetti();
     return replies;
@@ -1154,7 +1176,23 @@ function openModelSheet() {
     const btn = h("button", {
       type: "button",
       class: `model-card ${m.backend === "native" ? "hero" : ""} ${m.id === selected ? "selected" : ""} ${isActive ? "active" : ""}`,
-      onclick: () => { selected = m.id; syncSelection(); },
+      onclick: async () => {
+        selected = m.id;
+        syncSelection();
+        if (llmStatus.state === "ready" && llmStatus.model === m.id) return;
+        startBtn.disabled = think.disabled = true;
+        localStorage.setItem("llm_model", m.id);
+        const ok = await llm.load(m.id, { thinking: !!m.thinks && think.checked, token });
+        startBtn.disabled = think.disabled = false;
+        syncSelection();
+        render();
+        if (ok) {
+          toast(`Switched to ${llm.status.modelLabel ?? m.label} (context preserved).`, "ok");
+          void engine.estimateMissing();
+        } else {
+          toast(llm.status.text, "warn");
+        }
+      },
     },
       h("div", { class: "row", style: "justify-content:space-between;align-items:center;width:100%;gap:8px" },
         h("strong", null, m.label),

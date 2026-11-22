@@ -296,8 +296,27 @@ export class LLMClient {
   thinking = false;
   /** Last raw model reply (for the benchmark page). */
   lastRaw = "";
+  /** Last model thinking/reasoning trace (from <think> tags or OpenRouter reasoning). */
+  lastThinking = "";
+  /** Preserved conversation turns across messages and model switches. */
+  chatHistory: Array<{ role: "user" | "assistant"; content: string }> = (() => {
+    try {
+      const raw = sessionStorage.getItem("studyflow_chat_history");
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  })();
   /** Prompt size of the last call in tokens (0 if the backend doesn't report it). */
   lastPromptTokens = 0;
+
+  clearHistory(): void {
+    this.chatHistory = [];
+    try { sessionStorage.removeItem("studyflow_chat_history"); } catch { /* ignore */ }
+  }
+
+  private saveHistory(): void {
+    if (this.chatHistory.length > 16) this.chatHistory = this.chatHistory.slice(-16);
+    try { sessionStorage.setItem("studyflow_chat_history", JSON.stringify(this.chatHistory)); } catch { /* ignore */ }
+  }
 
   constructor(onChange: (s: LLMStatus) => void = () => {}) { this.onChange = onChange; }
 
@@ -329,10 +348,11 @@ export class LLMClient {
 
   /** Opt-in model load (only call from a user click). Supports switching models cleanly. */
   async load(model: string = MODELS[0].id, opts: { thinking?: boolean; token?: string; prefixCache?: boolean } = {}): Promise<boolean> {
-    if (this.status.state === "loading") return false;
     this.activeWorker?.terminate();
     this.activeWorker = null;
     this.engine = null;
+    this.estCache.clear();
+    try { localStorage.setItem("llm_model", model); } catch { /* ignore */ }
     const backend = MODELS.find((m) => m.id === model)?.backend ?? "webllm";
     if (backend === "native") {
       this.set({ state: "loading", progress: 0.2, text: "Connecting to Relay AI…", model });
@@ -352,8 +372,9 @@ export class LLMClient {
           const headers: Record<string, string> = { "Content-Type": "application/json" };
           if (opts.token) headers["X-Relay-Token"] = opts.token;
           const r = await fetch("/api/llm/chat", { method: "POST", headers, body: JSON.stringify(request) });
-          const d = await r.json().catch(() => ({})) as { content?: string; error?: string };
+          const d = await r.json().catch(() => ({})) as { content?: string; reasoning?: string; error?: string };
           if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+          this.lastThinking = String(d.reasoning ?? "").trim();
           return String(d.content ?? "");
         },
       };
@@ -396,12 +417,13 @@ export class LLMClient {
   }
 
   /** `cachePrefix`: the leading part of `system` that is the same on every call (reused from the KV cache). */
-  private async json(system: string, user: string, maxTokens = 400, cachePrefix = system, schema?: object): Promise<unknown> {
+  private async json(system: string, user: string, maxTokens = 400, cachePrefix = system, schema?: object, history: Array<{ role: "user" | "assistant"; content: string }> = []): Promise<unknown> {
     if (!this.engine) return null;
     let txt: string;
+    this.lastThinking = "";
     try {
       txt = await this.engine.chat({
-      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+      messages: [{ role: "system", content: system }, ...history, { role: "user", content: user }],
       temperature: 0.1, max_tokens: this.thinking ? maxTokens + 1024 : maxTokens,
       response_format: { type: "json_object" }, enable_thinking: this.thinking, cache_prefix: cachePrefix,
       ...(schema ? { json_schema: JSON.stringify(schema) } : {}),
@@ -411,6 +433,8 @@ export class LLMClient {
       throw e;
     }
     this.lastRaw = txt;
+    const thinkMatch = txt.match(/<think>([\s\S]*?)<\/think>/);
+    if (thinkMatch?.[1]?.trim()) this.lastThinking = thinkMatch[1].trim();
     return parseJSONReply(txt);
   }
 
@@ -459,10 +483,10 @@ export class LLMClient {
 
   /** Turn a chat/voice message into tool calls plus a short spoken-style reply. */
   /** `calls` is what the app runs (rules + checked model calls); `modelCalls` is the model alone, after the intent check. */
-  async command(text: string, state: State, now: Date, opts: { fallback?: boolean } = {}): Promise<{ calls: ToolCall[]; modelCalls: ToolCall[]; reply: string; via: "llm" | "rules" }> {
+  async command(text: string, state: State, now: Date, opts: { fallback?: boolean } = {}): Promise<{ calls: ToolCall[]; modelCalls: ToolCall[]; reply: string; thinking: string; via: "llm" | "rules" }> {
     const fallback = opts.fallback ?? true;
     const rules = fallback ? ruleParse(text, now, state.buckets) : [];
-    if (!this.ready) return { calls: rules, modelCalls: [], reply: "", via: "rules" };
+    if (!this.ready) return { calls: rules, modelCalls: [], reply: "", thinking: "", via: "rules" };
     try {
       const fixed = plannerSystem(state);
       const bucketSummary = state.buckets.filter((b) => b.key !== SCHOOL).map((b) => `${b.key} ${Math.round(b.logged_minutes / 60 * 10) / 10}/${b.target_hours}h`).join(", ");
@@ -476,16 +500,21 @@ export class LLMClient {
         `Open tasks:\n${relevantTasks(state, text, now, 12) || "(none)"}` +
         ((state.grades ?? []).length ? `\nGrades (weakest first): ${gradeLine(state, now)}` : "") +
         ((state.flags ?? []).some((f) => f.status !== "dismissed") ? `\nZeros/missing: ${(state.flags ?? []).filter((f) => f.status !== "dismissed").slice(0, 4).map((f) => `${f.course}: ${f.title} (${f.kind === "zero" ? `0/${f.points}` : "missing"}${f.status === "planned" ? ", make-up planned" : ""})`).join("; ")}` : "");
-      const j = (await this.json(fixed + context, text, 400, fixed, PLANNER_SCHEMA)) as { calls?: unknown; reply?: unknown } | null;
+      const j = (await this.json(fixed + context, text, 400, fixed, PLANNER_SCHEMA, this.chatHistory.slice(-8))) as { calls?: unknown; reply?: unknown } | null;
       let raw = validateCalls(j?.calls ?? []);
       if (!raw.length) raw = validateCalls(salvageCalls(this.lastRaw));
       const want = intendedTools(text);
       const modelCalls = raw.filter((c) => want.has(c.tool));
       const reply = typeof j?.reply === "string" ? j.reply.slice(0, 300) : "";
       const calls = mergeCalls(modelCalls, rules, text);
-      return { calls, modelCalls, reply, via: calls.some((c) => modelCalls.includes(c)) ? "llm" : "rules" };
+      this.chatHistory.push({ role: "user", content: text });
+      if (reply || calls.length) {
+        this.chatHistory.push({ role: "assistant", content: reply || calls.map((c) => c.tool).join(", ") });
+      }
+      this.saveHistory();
+      return { calls, modelCalls, reply, thinking: this.lastThinking, via: calls.some((c) => modelCalls.includes(c)) ? "llm" : "rules" };
     } catch {
-      return { calls: rules, modelCalls: [], reply: "", via: "rules" };
+      return { calls: rules, modelCalls: [], reply: "", thinking: this.lastThinking, via: "rules" };
     }
   }
 

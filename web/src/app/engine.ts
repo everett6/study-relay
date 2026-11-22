@@ -563,9 +563,11 @@ export class Engine {
   }
 
   // ------------------------------------------------------------------ chat & voice
+  lastThinking = "";
   async run(text: string): Promise<Reply[]> {
     const now = this.clock();
-    const { calls, reply, via } = await this.llm.command(text, this.state, now);
+    const { calls, reply, thinking, via } = await this.llm.command(text, this.state, now);
+    this.lastThinking = thinking;
     const out: Reply[] = [];
     if (!calls.length) {
       out.push({ tone: "info", text: reply || "I didn't catch a change in that. Try “I have a banquet at 7 tonight”, “what's my grade in bio?”, or “start a focus session for AIME”." });
