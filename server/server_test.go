@@ -887,3 +887,30 @@ func TestSchoolHolidaysOpenFullDay(t *testing.T) {
 		t.Fatalf("2026-11-23 should be a normal school day")
 	}
 }
+
+func TestPasswordLogin(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	la, _ := time.LoadLocation("America/Los_Angeles")
+	s := NewServer(store, Config{
+		Token:     "tok-secret-123",
+		RelayUser: "testuser",
+		RelayPass: "testpass",
+	}, la, time.Now)
+	h := s.Routes()
+
+	bad := httptest.NewRecorder()
+	h.ServeHTTP(bad, httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"testuser","password":"wrong"}`)))
+	if bad.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong password, got %d", bad.Code)
+	}
+
+	ok := httptest.NewRecorder()
+	h.ServeHTTP(ok, httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"testuser","password":"testpass"}`)))
+	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), "tok-secret-123") {
+		t.Fatalf("expected 200 with token, got %d %s", ok.Code, ok.Body.String())
+	}
+}

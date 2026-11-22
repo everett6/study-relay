@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -47,6 +48,8 @@ type Config struct {
 	MatrixLlamaBin  string
 	MatrixGGUFPath  string
 	MatrixLlamaPort int
+	RelayUser       string
+	RelayPass       string
 }
 
 type Server struct {
@@ -138,6 +141,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /oauth/authorize", s.oauthAuthorizeHTTP)
 	mux.HandleFunc("POST /oauth/authorize", s.oauthAuthorizeHTTP)
 	mux.HandleFunc("POST /oauth/token", s.oauthTokenHTTP)
+	mux.HandleFunc("POST /api/login", s.loginHTTP)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /", s.serveStatic)
 	return withSecurityHeaders(mux)
@@ -218,6 +222,28 @@ func (s *Server) postSync(w http.ResponseWriter, r *http.Request) {
 		s.triggerPiMatrixAsync()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": nv})
+}
+
+func (s *Server) loginHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.RelayUser == "" || s.cfg.RelayPass == "" {
+		httpError(w, http.StatusForbidden, "password login not configured")
+		return
+	}
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	uOK := subtle.ConstantTimeCompare([]byte(strings.TrimSpace(body.Username)), []byte(s.cfg.RelayUser)) == 1
+	pOK := subtle.ConstantTimeCompare([]byte(body.Password), []byte(s.cfg.RelayPass)) == 1
+	if !uOK || !pOK {
+		httpError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": s.cfg.Token})
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -415,6 +441,8 @@ func main() {
 		MatrixLlamaBin:  os.Getenv("MATRIX_LLAMA_BIN"),
 		MatrixGGUFPath:  os.Getenv("MATRIX_GGUF_PATH"),
 		MatrixLlamaPort: matrixPort,
+		RelayUser:       os.Getenv("RELAY_USER"),
+		RelayPass:       os.Getenv("RELAY_PASS"),
 	}, loc, nil)
 	srv.integ = IntegrationsFromEnv()
 	hs := &http.Server{Addr: addr, Handler: srv.Routes(),

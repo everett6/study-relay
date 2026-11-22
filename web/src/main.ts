@@ -1126,14 +1126,36 @@ function openModelSheet() {
 }
 
 function openPairSheet() {
-  const inp = h("input", { type: "password", value: localStorage.getItem("relay_token") ?? "", placeholder: "Paste relay token or #pair=... link", autocomplete: "off" });
-  const close = sheet("Sign in to Study Relay", h("form", { class: "stack", onsubmit: async (e: Event) => {
+  const userInp = h("input", { type: "text", placeholder: "Username", autocomplete: "username" });
+  const passInp = h("input", { type: "password", placeholder: "Password", autocomplete: "current-password" });
+  const tokInp = h("input", { type: "password", value: localStorage.getItem("relay_token") ?? "", placeholder: "Paste relay token or #pair=... link", autocomplete: "off" });
+  const errLine = h("p", { class: "muted small", style: "color:var(--danger)", hidden: true });
+  const close = sheet("Sign in to Study Flow", h("form", { class: "stack", onsubmit: async (e: Event) => {
     e.preventDefault();
-    let v = inp.value.trim();
-    const m = v.match(/#pair=([^&\s]+)/);
-    if (m) v = decodeURIComponent(m[1]);
-    if (!v) return;
-    localStorage.setItem("relay_token", v);
+    errLine.hidden = true;
+    let tok = tokInp.value.trim();
+    const m = tok.match(/#pair=([^&\s]+)/);
+    if (m) tok = decodeURIComponent(m[1]);
+    if (!tok && userInp.value.trim() && passInp.value) {
+      const r = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: userInp.value.trim(), password: passInp.value }),
+      });
+      const j = await r.json().catch(() => ({})) as { ok?: boolean; token?: string; error?: string };
+      if (!r.ok || !j.token) {
+        errLine.textContent = j.error || "Invalid username or password";
+        errLine.hidden = false;
+        return;
+      }
+      tok = j.token;
+    }
+    if (!tok) {
+      errLine.textContent = "Enter your username and password.";
+      errLine.hidden = false;
+      return;
+    }
+    localStorage.setItem("relay_token", tok);
     close();
     await store.pull();
     if (/\b401\b|bad relay token/.test(store.lastError)) {
@@ -1144,12 +1166,16 @@ function openPairSheet() {
       render();
     }
   } },
-    h("p", { class: "muted small" }, "Paste your relay token (or the full #pair= link) to sync this browser with your Pi 5."),
-    h("label", null, "Relay token", inp),
+    h("label", null, "Username", userInp),
+    h("label", null, "Password", passInp),
+    errLine,
+    h("details", { class: "muted small" },
+      h("summary", null, "Or paste a relay token"),
+      h("div", { style: "margin-top:8px" }, tokInp)),
     h("div", { class: "row end" },
       h("button", { type: "button", class: "btn ghost", onclick: () => close() }, "Stay offline"),
-      h("button", { type: "submit", class: "btn primary" }, "Connect"))));
-  inp.focus();
+      h("button", { type: "submit", class: "btn primary" }, "Sign in"))));
+  userInp.focus();
 }
 
 function openSettings() {
