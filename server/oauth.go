@@ -140,6 +140,42 @@ func (s *Server) oauthRegisterHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) renderOAuthAuthorizePage(w http.ResponseWriter, status int, clientID, redirectURI, state, challenge, method, errMsg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	useLogin := s.cfg.RelayUser != "" && s.cfg.RelayPass != ""
+	subtitle := "Enter your Relay Token to connect this MCP client to your schedule and tasks."
+	fields := `<input type="password" name="relay_token" placeholder="Relay Token" required autofocus>`
+	if useLogin {
+		subtitle = "Sign in with your Study Flow account to connect this MCP client to your schedule and tasks."
+		fields = `<input type="text" name="username" placeholder="Username" autocomplete="username" required autofocus>
+<input type="password" name="password" placeholder="Password" autocomplete="current-password" required>`
+	}
+	errHTML := ""
+	if errMsg != "" {
+		errHTML = fmt.Sprintf(`<p style="color:#b91c1c;background:#fee2e2;padding:10px 12px;border-radius:10px;font-size:14px;margin:0 0 12px">%s</p>`, html.EscapeString(errMsg))
+	}
+	page := fmt.Sprintf(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Authorize Study Flow MCP</title>
+<style>body{font-family:system-ui,sans-serif;max-width:420px;margin:60px auto;padding:0 16px;color:#1d1b2f;background:#f7f5ff}
+.card{background:#fff;padding:24px;border-radius:18px;box-shadow:0 8px 28px rgba(40,30,90,.08)}
+input{width:100%%;box-sizing:border-box;padding:10px 12px;margin:8px 0;border:1px solid #ccc;border-radius:10px;font-size:15px}
+button{width:100%%;margin-top:8px;padding:11px;border:0;border-radius:12px;background:#7c5cff;color:#fff;font-weight:700;font-size:15px;cursor:pointer}</style></head>
+<body><div class="card"><h2>Authorize Study Flow</h2><p>%s</p>%s
+<form method="POST" action="/oauth/authorize">
+<input type="hidden" name="client_id" value="%s">
+<input type="hidden" name="redirect_uri" value="%s">
+<input type="hidden" name="state" value="%s">
+<input type="hidden" name="code_challenge" value="%s">
+<input type="hidden" name="code_challenge_method" value="%s">
+%s
+<button type="submit">Sign in &amp; Approve access</button></form></div></body></html>`,
+		html.EscapeString(subtitle), errHTML,
+		html.EscapeString(clientID), html.EscapeString(redirectURI), html.EscapeString(state),
+		html.EscapeString(challenge), html.EscapeString(method), fields)
+	_, _ = io.WriteString(w, page)
+}
+
 func (s *Server) oauthAuthorizeHTTP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	clientID := q.Get("client_id")
@@ -149,25 +185,7 @@ func (s *Server) oauthAuthorizeHTTP(w http.ResponseWriter, r *http.Request) {
 	method := q.Get("code_challenge_method")
 
 	if r.Method == http.MethodGet {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		page := fmt.Sprintf(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Authorize Study Flow MCP</title>
-<style>body{font-family:system-ui,sans-serif;max-width:420px;margin:60px auto;padding:0 16px;color:#1d1b2f;background:#f7f5ff}
-.card{background:#fff;padding:24px;border-radius:18px;box-shadow:0 8px 28px rgba(40,30,90,.08)}
-input{width:100%%;box-sizing:border-box;padding:10px 12px;margin:12px 0;border:1px solid #ccc;border-radius:10px;font-size:15px}
-button{width:100%%;padding:11px;border:0;border-radius:12px;background:#7c5cff;color:#fff;font-weight:700;font-size:15px;cursor:pointer}</style></head>
-<body><div class="card"><h2>Authorize Study Flow</h2><p>Enter your Relay Token to connect this MCP client to your schedule and tasks.</p>
-<form method="POST" action="/oauth/authorize">
-<input type="hidden" name="client_id" value="%s">
-<input type="hidden" name="redirect_uri" value="%s">
-<input type="hidden" name="state" value="%s">
-<input type="hidden" name="code_challenge" value="%s">
-<input type="hidden" name="code_challenge_method" value="%s">
-<input type="password" name="relay_token" placeholder="Relay Token" required autofocus>
-<button type="submit">Approve access</button></form></div></body></html>`,
-			html.EscapeString(clientID), html.EscapeString(redirectURI), html.EscapeString(state),
-			html.EscapeString(challenge), html.EscapeString(method))
-		_, _ = io.WriteString(w, page)
+		s.renderOAuthAuthorizePage(w, http.StatusOK, clientID, redirectURI, state, challenge, method, "")
 		return
 	}
 
@@ -180,10 +198,21 @@ button{width:100%%;padding:11px;border:0;border-radius:12px;background:#7c5cff;c
 	state = r.FormValue("state")
 	challenge = r.FormValue("code_challenge")
 	method = r.FormValue("code_challenge_method")
-	tok := strings.TrimSpace(r.FormValue("relay_token"))
 
-	if s.cfg.Token != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.Token)) != 1 {
-		httpError(w, http.StatusUnauthorized, "invalid relay token")
+	useLogin := s.cfg.RelayUser != "" && s.cfg.RelayPass != ""
+	tok := strings.TrimSpace(r.FormValue("relay_token"))
+	tokenOK := s.cfg.Token == "" || (tok != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.Token)) == 1)
+	if useLogin {
+		user := strings.TrimSpace(r.FormValue("username"))
+		pass := r.FormValue("password")
+		uOK := subtle.ConstantTimeCompare([]byte(user), []byte(s.cfg.RelayUser)) == 1
+		pOK := subtle.ConstantTimeCompare([]byte(pass), []byte(s.cfg.RelayPass)) == 1
+		if !(uOK && pOK) && !(tok != "" && tokenOK) {
+			s.renderOAuthAuthorizePage(w, http.StatusUnauthorized, clientID, redirectURI, state, challenge, method, "Invalid username or password.")
+			return
+		}
+	} else if !tokenOK {
+		s.renderOAuthAuthorizePage(w, http.StatusUnauthorized, clientID, redirectURI, state, challenge, method, "Invalid relay token.")
 		return
 	}
 	u, err := url.Parse(redirectURI)

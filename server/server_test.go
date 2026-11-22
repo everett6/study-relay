@@ -1023,3 +1023,57 @@ func TestMCPSessionID(t *testing.T) {
 		t.Fatalf("DELETE /mcp status = %d, want 204", resp3.StatusCode)
 	}
 }
+
+func TestOAuthAuthorizeUsernamePassword(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	la, _ := time.LoadLocation("America/Los_Angeles")
+	s := NewServer(store, Config{
+		Token:     "secret-relay-tok",
+		RelayUser: "EverettS12",
+		RelayPass: "@Shopping20",
+	}, la, time.Now)
+	ts := httptest.NewServer(s.Routes())
+	defer ts.Close()
+
+	// GET renders username + password login form
+	resp, err := http.Get(ts.URL + "/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&state=st1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(bodyBytes), `name="username"`) || !strings.Contains(string(bodyBytes), `name="password"`) {
+		t.Fatalf("expected username/password form, got status=%d body=%s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// Wrong password returns 401
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	badResp, err := client.Post(ts.URL+"/oauth/authorize", "application/x-www-form-urlencoded",
+		strings.NewReader("client_id=c1&redirect_uri=https%3A%2F%2Fexample.com%2Fcb&state=st1&username=EverettS12&password=wrong"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	badResp.Body.Close()
+	if badResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on bad password, got %d", badResp.StatusCode)
+	}
+
+	// Correct credentials redirect with authorization code
+	okResp, err := client.Post(ts.URL+"/oauth/authorize", "application/x-www-form-urlencoded",
+		strings.NewReader("client_id=c1&redirect_uri=https%3A%2F%2Fexample.com%2Fcb&state=st1&username=EverettS12&password=%40Shopping20"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	okResp.Body.Close()
+	if okResp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 redirect on valid login, got %d", okResp.StatusCode)
+	}
+	if loc := okResp.Header.Get("Location"); !strings.Contains(loc, "code=code-") || !strings.Contains(loc, "state=st1") {
+		t.Fatalf("unexpected redirect location: %q", loc)
+	}
+}
