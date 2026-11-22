@@ -866,18 +866,15 @@ func (s *Server) toolPlanningContext(date string, days int) (map[string]any, err
 	if days > 14 {
 		days = 14
 	}
-	brief, err := s.toolDailyBriefing(ds)
-	if err != nil {
-		return nil, err
-	}
 	week, err := s.toolWeekOverview(ds, days)
 	if err != nil {
 		return nil, err
 	}
-	mom, err := s.toolMomentumAndSessions(10)
+	mom, err := s.toolMomentumAndSessions(0)
 	if err != nil {
 		return nil, err
 	}
+	delete(mom, "sessions")
 	slotDays := days
 	if slotDays > 3 {
 		slotDays = 3
@@ -899,27 +896,33 @@ func (s *Server) toolPlanningContext(date string, days int) (map[string]any, err
 			"id":             t.ID,
 			"course":         t.Course,
 			"title":          t.Title,
-			"category":       t.Category,
 			"due_at":         t.DueAt,
 			"est_minutes":    t.EstMinutes,
 			"cognitive_load": t.CognitiveLoad,
-			"est_source":     t.EstSource,
 		})
 	}
-	endWindow := now.AddDate(0, 0, days).Format(dateLayout)
-	events := []Event{}
-	for _, ev := range st.Events {
-		if len(ev.Start) >= 10 && ev.Start[:10] >= ds && ev.Start[:10] <= endWindow {
-			events = append(events, ev)
-		}
+	gradesSummary := make([]map[string]any, 0, len(st.Grades))
+	for _, g := range st.Grades {
+		gradesSummary = append(gradesSummary, map[string]any{
+			"course": g.Course, "score": g.Score, "grade": g.Grade,
+		})
 	}
-	brief["rules"] = st.Rules
-	brief["open_tasks"] = openTasks
-	brief["events"] = events
-	brief["week"] = week
-	brief["momentum"] = mom
-	brief["multi_day_free_slots"] = slots["slots"]
-	return brief, nil
+	targetDay, _ := time.ParseInLocation(dateLayout, ds, s.loc)
+	return map[string]any{
+		"date":                 ds,
+		"now":                  now.Format(localLayout),
+		"school_day":           isSchoolDay(st.Rules, targetDay),
+		"holiday":              schoolHolidayName(targetDay),
+		"rules":                st.Rules,
+		"momentum":             mom,
+		"buckets":              st.Buckets,
+		"grades":               gradesSummary,
+		"flags":                st.Flags,
+		"at_risk":              st.Meta.AtRisk,
+		"open_tasks":           openTasks,
+		"week":                 week,
+		"multi_day_free_slots": slots["slots"],
+	}, nil
 }
 
 func (s *Server) toolFindFreeSlots(date string, days, minMinutes int) (map[string]any, error) {
