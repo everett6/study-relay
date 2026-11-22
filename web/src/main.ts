@@ -85,7 +85,7 @@ function render() {
     dot.title = store.status === "synced" ? "Synced with relay" : store.status === "offline" ? `Offline: changes are saved and will sync (${store.lastError})` : "Syncing…";
     if (/\b401\b|bad relay token/.test(store.lastError) && !tokenHintShown) {
       tokenHintShown = true;
-      toast("This device isn't signed in to your relay yet. On the relay computer run “study-relay pair” and open the link it prints here. Your changes are kept on this device meanwhile.", "warn", 15000);
+      openPairSheet();
     }
     const newCount = s.inbox.filter((i) => i.status === "new").length + s.drafts.filter((d) => d.status === "draft").length;
     const badge = document.getElementById("inbox-badge")!;
@@ -728,7 +728,7 @@ async function testConnections(btn?: HTMLButtonElement) {
         return h("div", { class: `check-row ${!c?.configured ? "off" : c.ok ? "ok" : "bad"}` },
           h("b", null, svg(!c?.configured ? ICON.circle : c.ok ? ICON.check : ICON.x), label), h("p", { class: "muted small" }, c?.detail ?? ""));
       }),
-      h("p", { class: "muted small" }, "Nothing was posted or sent. To change settings, run setup-integrations.sh, then restart the relay.")));
+      h("p", { class: "muted small" }, "Nothing was posted or sent. To change settings, open Settings → Connect services.")));
     void loadIntegrations();
   } catch (e) { toast(`Couldn't run the check: ${(e as Error).message}`, "warn"); }
   finally { btn?.classList.remove("spin"); }
@@ -1125,6 +1125,33 @@ function openModelSheet() {
   ), { onClose: () => clearInterval(unsub) });
 }
 
+function openPairSheet() {
+  const inp = h("input", { type: "password", value: localStorage.getItem("relay_token") ?? "", placeholder: "Paste relay token or #pair=... link", autocomplete: "off" });
+  const close = sheet("Sign in to Study Relay", h("form", { class: "stack", onsubmit: async (e: Event) => {
+    e.preventDefault();
+    let v = inp.value.trim();
+    const m = v.match(/#pair=([^&\s]+)/);
+    if (m) v = decodeURIComponent(m[1]);
+    if (!v) return;
+    localStorage.setItem("relay_token", v);
+    close();
+    await store.pull();
+    if (/\b401\b|bad relay token/.test(store.lastError)) {
+      toast("That relay token didn't match.", "warn");
+    } else {
+      toast("Signed in and synced!", "ok");
+      void loadIntegrations();
+      render();
+    }
+  } },
+    h("p", { class: "muted small" }, "Paste your relay token (or the full #pair= link) to sync this browser with your Pi 5."),
+    h("label", null, "Relay token", inp),
+    h("div", { class: "row end" },
+      h("button", { type: "button", class: "btn ghost", onclick: () => close() }, "Stay offline"),
+      h("button", { type: "submit", class: "btn primary" }, "Connect"))));
+  inp.focus();
+}
+
 function openSettings() {
   const s = store.state;
   const relay = h("input", { type: "password", value: localStorage.getItem("relay_token") ?? "", placeholder: "filled in by the pairing link", autocomplete: "off" });
@@ -1210,7 +1237,11 @@ function openSettings() {
 
 async function openConnections() {
   let cfg: Record<string, unknown> = {};
-  try { cfg = await api<Record<string, unknown>>("/api/integrations/config"); } catch { /* offline */ }
+  try { cfg = await api<Record<string, unknown>>("/api/integrations/config"); }
+  catch (err) {
+    toast(`Could not load saved connection settings: ${(err as Error).message}`, "warn");
+    return;
+  }
   const savedHint = (ok: unknown, fallback: string) => ok ? "Saved (leave blank to keep)" : fallback;
 
   const prov = h("select", null,
@@ -1229,26 +1260,127 @@ async function openConnections() {
   const canvasUrl = h("input", { value: String(cfg.canvas_base_url ?? "https://esuhsd.instructure.com"), placeholder: "https://esuhsd.instructure.com" });
   const canvasTok = h("input", { type: "password", placeholder: savedHint(cfg.canvas_configured, "Canvas API Access Token"), autocomplete: "off" });
 
-  const llmUrl = h("input", { value: String(cfg.local_llm_url ?? "http://127.0.0.1:11434/v1") });
+  const savedLLMUrl = String(cfg.local_llm_url ?? "http://127.0.0.1:11434/v1");
+  const initialProvider = savedLLMUrl.includes("openrouter.ai") ? "openrouter"
+    : savedLLMUrl.includes("azure.com") ? "azure"
+      : savedLLMUrl.includes("api.openai.com") ? "openai" : "local";
+  let currentProvider = initialProvider;
+  const llmUrl = h("input", { value: savedLLMUrl });
   const llmModel = h("input", { value: String(cfg.local_llm_model ?? "lfm2.5") });
-  const llmKey = h("input", { type: "password", placeholder: savedHint(cfg.local_llm_key_configured, "API key (blank for local Ollama)"), autocomplete: "off" });
+  const llmKey = h("input", { type: "password", placeholder: "", autocomplete: "new-password" });
   const llmCtx = h("input", { type: "number", min: "2048", max: "131072", step: "1024", value: String(cfg.local_llm_ctx ?? 32768) });
-  const llmPreset = h("select", { onchange: () => {
-    if (llmPreset.value === "openrouter-free") { llmUrl.value = "https://openrouter.ai/api/v1"; llmModel.value = "google/gemma-4-31b-it:free"; llmCtx.value = "32768"; if (!cfg.local_llm_key_configured) llmKey.placeholder = "Paste OpenRouter API key (sk-or-...) — required even for :free"; }
-    else if (llmPreset.value === "openrouter-luna") { llmUrl.value = "https://openrouter.ai/api/v1"; llmModel.value = "openai/gpt-6-luna"; llmCtx.value = "32768"; if (!cfg.local_llm_key_configured) llmKey.placeholder = "Paste OpenRouter API key (sk-or-...)"; }
-    else if (llmPreset.value === "luna") { llmUrl.value = "https://api.openai.com/v1"; llmModel.value = "gpt-6-luna"; }
-    else if (llmPreset.value === "azure-luna") { llmUrl.value = "https://YOUR-RESOURCE.openai.azure.com/openai/v1"; llmModel.value = "gpt-6-luna"; }
-    else if (llmPreset.value === "ollama") { llmUrl.value = "http://127.0.0.1:11434/v1"; llmModel.value = "lfm2.5"; llmCtx.value = "32768"; }
-  } },
-    h("option", { value: "" }, "— Pick preset or edit below —"),
-    h("option", { value: "openrouter-free" }, "OpenRouter free (Gemma 4 31B, no cost)"),
-    h("option", { value: "openrouter-luna" }, "OpenRouter (gpt-6-luna)"),
-    h("option", { value: "luna" }, "OpenAI direct (gpt-6-luna)"),
-    h("option", { value: "azure-luna" }, "Azure OpenAI (gpt-6-luna, Student Pack)"),
-    h("option", { value: "ollama" }, "Local Ollama (lfm2.5, 32K ctx)"));
+  const providerKeys: Record<string, { configured: boolean; placeholder: string; url: string; model: string }> = {
+    openrouter: { configured: Boolean(cfg.openrouter_key_configured),
+      placeholder: "OpenRouter API key (sk-or-…)", url: "https://openrouter.ai/api/v1", model: "google/gemma-4-31b-it:free" },
+    openai: { configured: Boolean(cfg.openai_key_configured),
+      placeholder: "OpenAI API key", url: "https://api.openai.com/v1", model: "gpt-6-luna" },
+    azure: { configured: Boolean(cfg.azure_key_configured),
+      placeholder: "Azure OpenAI API key", url: "https://YOUR-RESOURCE.openai.azure.com/openai/v1", model: "gpt-6-luna" },
+    local: { configured: Boolean(cfg.local_key_configured)
+      || (initialProvider === "local" && Boolean(cfg.local_llm_key_configured)),
+      placeholder: "Optional API key for your local/custom endpoint", url: "http://127.0.0.1:11434/v1", model: "lfm2.5" },
+  };
+  const keyDrafts: Record<string, string> = {};
+  const modelDrafts: Record<string, { url: string; model: string; context: string }> = {
+    [initialProvider]: { url: llmUrl.value, model: llmModel.value, context: llmCtx.value },
+  };
+  const providerIds = ["openrouter", "openai", "azure", "local"] as const;
+  const providerLabels: Record<(typeof providerIds)[number], string> = {
+    openrouter: "OpenRouter", openai: "OpenAI", azure: "Azure", local: "Local / custom",
+  };
+  const providerButtons: HTMLButtonElement[] = [];
+  const keyStatus = h("p", { class: "provider-key-status", "aria-live": "polite" }, "");
+  const isProviderKeySaved = (provider: string) => providerKeys[provider].configured
+    || (provider === initialProvider && Boolean(cfg.local_llm_key_configured));
+  const updateProviderKeyHint = () => {
+    const p = providerKeys[currentProvider];
+    llmKey.placeholder = p.placeholder;
+    const configured = isProviderKeySaved(currentProvider);
+    keyStatus.className = `provider-key-status ${configured ? "saved" : "empty"}`;
+    keyStatus.replaceChildren(
+      h("span", { class: "provider-key-dot", "aria-hidden": "true" }),
+      configured
+        ? "API key saved on your relay. Leave blank to keep it, or enter a new one to replace it."
+        : "No key saved for this provider yet. Enter it once and it will be saved on your relay.",
+    );
+    providerButtons.forEach((button) => {
+      const provider = button.dataset.provider!;
+      const active = provider === currentProvider;
+      button.classList.toggle("on", active);
+      button.setAttribute("aria-pressed", String(active));
+      button.querySelector("small")!.textContent = isProviderKeySaved(provider) ? "Key saved"
+        : provider === "local" ? "Key optional" : "Add API key";
+    });
+  };
+  const changeLLMProvider = (provider: string) => {
+    keyDrafts[currentProvider] = llmKey.value;
+    modelDrafts[currentProvider] = { url: llmUrl.value, model: llmModel.value, context: llmCtx.value };
+    currentProvider = provider;
+    const p = providerKeys[currentProvider];
+    const draft = modelDrafts[currentProvider] ?? { url: p.url, model: p.model, context: "32768" };
+    llmUrl.value = draft.url;
+    llmModel.value = draft.model;
+    llmCtx.value = draft.context;
+    llmKey.value = keyDrafts[currentProvider] ?? "";
+    updateProviderKeyHint();
+  };
+  const providerNav = h("div", { class: "provider-nav", role: "group", "aria-label": "AI model provider" },
+    ...providerIds.map((id) => {
+      const button = h("button", { class: `provider-choice ${id === initialProvider ? "on" : ""}`, type: "button",
+        "aria-pressed": String(id === initialProvider), "data-provider": id,
+        onclick: () => changeLLMProvider(id) },
+        h("span", null, providerLabels[id]),
+        h("small", null, isProviderKeySaved(id) ? "Key saved" : id === "local" ? "Key optional" : "Add API key"));
+      providerButtons.push(button);
+      return button;
+    }));
+  updateProviderKeyHint();
 
-  const statusLine = h("p", { class: "muted small" }, "Secrets are saved only to server/.env (mode 600) and never sent back to the browser.");
-  const close = sheet("Connect Services", h("form", { class: "stack", onsubmit: async (e: Event) => {
+  const serviceIds = ["email", "discord", "canvas", "ai"] as const;
+  const serviceLabels: Record<(typeof serviceIds)[number], string> = {
+    email: "Email", discord: "Discord", canvas: "Canvas", ai: "AI model",
+  };
+  const serviceTabs: HTMLButtonElement[] = [];
+  const servicePanels: HTMLElement[] = [];
+  const activateService = (selected: string) => {
+    serviceTabs.forEach((tab) => {
+      const active = tab.dataset.service === selected;
+      tab.classList.toggle("on", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+    });
+    servicePanels.forEach((panel) => { panel.hidden = panel.dataset.service !== selected; });
+  };
+  const serviceNav = h("div", { class: "connection-nav", role: "tablist", "aria-label": "Connection type" },
+    ...serviceIds.map((id, index) => {
+      const tab = h("button", { class: `connection-tab ${id === "ai" ? "on" : ""}`, id: `connection-tab-${id}`,
+        type: "button", role: "tab", "aria-controls": `connection-panel-${id}`, "aria-selected": String(id === "ai"),
+        tabindex: id === "ai" ? "0" : "-1", "data-service": id,
+        onclick: () => activateService(id),
+        onkeydown: (e: KeyboardEvent) => {
+          let next = index;
+          if (e.key === "ArrowRight") next = (index + 1) % serviceIds.length;
+          else if (e.key === "ArrowLeft") next = (index + serviceIds.length - 1) % serviceIds.length;
+          else if (e.key === "Home") next = 0;
+          else if (e.key === "End") next = serviceIds.length - 1;
+          else return;
+          e.preventDefault();
+          activateService(serviceIds[next]);
+          serviceTabs[next].focus();
+        } },
+        h("span", { class: "connection-tab-name" }, serviceLabels[id]),
+        h("small", null, id === "ai" ? "OpenRouter, OpenAI, local" : id === "email" ? "Gmail or other mail" : id === "discord" ? "Channels & webhooks" : "Classes & assignments"));
+      serviceTabs.push(tab);
+      return tab;
+    }));
+  const servicePanel = (id: (typeof serviceIds)[number], child: Node) => {
+    const panel = h("section", { class: "connection-panel", id: `connection-panel-${id}`, role: "tabpanel",
+      "aria-labelledby": `connection-tab-${id}`, "data-service": id, hidden: id !== "ai" }, child);
+    servicePanels.push(panel);
+    return panel;
+  };
+
+  const close = sheet("Connect services", h("form", { class: "connections-form", onsubmit: async (e: Event) => {
     e.preventDefault();
     const btn = (e.currentTarget as HTMLFormElement).querySelector("button[type=submit]") as HTMLButtonElement;
     btn.disabled = true; btn.textContent = "Saving & testing…";
@@ -1268,6 +1400,7 @@ async function openConnections() {
           local_llm_url: llmUrl.value.trim(),
           local_llm_model: llmModel.value.trim(),
           local_llm_api_key: llmKey.value.trim(),
+          llm_provider: currentProvider,
           local_llm_ctx: Number(llmCtx.value) || 32768,
         }),
       });
@@ -1280,28 +1413,44 @@ async function openConnections() {
       btn.disabled = false; btn.textContent = "Save & Test";
     }
   } },
-    h("h3", null, "Gmail / Email (IMAP & SMTP)"),
-    h("label", null, "Provider", prov),
-    h("label", null, "Email address", emailUser),
-    h("label", null, "App password", emailPass),
-    h("label", null, "Keep only matching senders/subjects", emailFilters),
-    h("h3", null, "Discord"),
-    h("label", null, "Bot token (Message Content Intent)", botToken),
-    h("label", null, "Channel IDs (comma-separated)", channels),
-    h("label", null, "Webhook URL (optional)", webhook),
-    h("h3", null, "Canvas"),
-    h("label", null, "Canvas URL", canvasUrl),
-    h("label", null, "API token", canvasTok),
-    h("h3", null, "Relay AI (gpt-6-luna or Local LFM)"),
-    h("label", null, "Quick preset", llmPreset),
-    h("label", null, "OpenAI-compatible URL", llmUrl),
-    h("div", { class: "row" }, h("label", { style: "flex:1" }, "Model", llmModel), h("label", { style: "width:120px" }, "Context", llmCtx)),
-    h("label", null, "API key (OpenRouter / OpenAI / Azure)", llmKey),
-    statusLine,
-    h("div", { class: "row end" },
-      h("button", { type: "button", class: "btn ghost", onclick: () => close() }, "Cancel"),
-      h("button", { type: "submit", class: "btn primary" }, "Save & Test")),
-  ));
+    h("p", { class: "connections-intro" }, "Bring your classes, messages, and study tools into one plan. Leave a secret blank to keep the value already saved."),
+    serviceNav,
+    h("div", { class: "connection-panels" },
+      servicePanel("email", h("section", { class: "connection-card email" },
+        h("div", { class: "connection-card-head" }, h("span", { class: "connection-icon" }, svg(ICON.mail)),
+          h("div", null, h("h3", null, "Email"), h("p", null, "Read school updates and send messages."))),
+        h("label", null, "Provider", prov),
+        h("label", null, "Email address", emailUser),
+        h("label", null, "App password", emailPass),
+        h("label", null, "Only match these senders or subjects", emailFilters))),
+      servicePanel("discord", h("section", { class: "connection-card discord" },
+        h("div", { class: "connection-card-head" }, h("span", { class: "connection-icon" }, svg(ICON.chat)),
+          h("div", null, h("h3", null, "Discord"), h("p", null, "Capture messages from selected channels."))),
+        h("label", null, "Bot token", botToken),
+        h("label", null, "Channel IDs", channels),
+        h("label", null, "Webhook URL (optional)", webhook))),
+      servicePanel("canvas", h("section", { class: "connection-card canvas" },
+        h("div", { class: "connection-card-head" }, h("span", { class: "connection-icon" }, svg(ICON.school)),
+          h("div", null, h("h3", null, "Canvas"), h("p", null, "Sync classes, assignments, and due dates."))),
+        h("label", null, "Canvas URL", canvasUrl),
+        h("label", null, "API token", canvasTok))),
+      servicePanel("ai", h("section", { class: "connection-card relay" },
+        h("div", { class: "connection-card-head" }, h("span", { class: "connection-icon" }, svg(ICON.spark)),
+          h("div", null, h("h3", null, "AI model provider"), h("p", null, "Choose where Study Relay sends AI requests. Each provider keeps its own saved key."))),
+        providerNav,
+        h("div", { class: "connection-fields" },
+          h("label", { class: "connection-full" }, "OpenAI-compatible URL", llmUrl),
+          h("label", null, "Model", llmModel),
+          h("label", { class: "connection-context" }, "Context length", llmCtx),
+          h("label", { class: "connection-full" }, "API key", llmKey)),
+        keyStatus,
+        h("div", { class: "provider-note" }, "OpenRouter: use your OpenRouter key and an exact model ID from your OpenRouter account. Local Ollama does not need a key.")))),
+    h("div", { class: "connections-actions" },
+      h("p", { class: "connections-security-note" }, svg(ICON.check), " Secrets are saved only on your relay server and never sent back to this browser."),
+      h("div", { class: "row end" },
+        h("button", { type: "button", class: "btn ghost", onclick: () => close() }, "Cancel"),
+        h("button", { type: "submit", class: "btn primary" }, "Save & Test"))),
+  ), { wide: true, className: "connections-sheet", focusSelector: "#connection-tab-ai" });
 }
 
 // ------------------------------------------------------------------ boot

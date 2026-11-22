@@ -41,8 +41,18 @@ done
 
 PW_CHROME="$(find "${HOME}/.cache/ms-playwright" -maxdepth 3 -name chrome -type f 2>/dev/null | head -n 1 || true)"
 if [[ -n "${PW_CHROME}" ]]; then
-  exec "${PW_CHROME}" --no-sandbox --ozone-platform=x11 --user-data-dir="${HOME}/.config/study-relay-chrome" \
-    --app="${URL}" --enable-unsafe-webgpu --enable-features=Vulkan,WebGPU --ignore-gpu-blocklist
+  PROFILE_DIR="${HOME}/.config/study-relay-chrome"
+  mkdir -p "${PROFILE_DIR}"
+  LAUNCH_URL="${URL}"
+  if [[ "${URL}" == "https://studyflow.tail1bc539.ts.net" && ! -f "${PROFILE_DIR}/.paired" ]]; then
+    PAIR_TOK="$(ssh -o BatchMode=yes -o ConnectTimeout=2 everett@100.66.132.28 "grep '^RELAY_TOKEN=' /home/everett/study-relay/.env 2>/dev/null | cut -d= -f2-" 2>/dev/null || true)"
+    if [[ -n "${PAIR_TOK}" ]]; then
+      LAUNCH_URL="${URL}/#pair=${PAIR_TOK}"
+      touch "${PROFILE_DIR}/.paired"
+    fi
+  fi
+  exec "${PW_CHROME}" --no-sandbox --ozone-platform=x11 --user-data-dir="${PROFILE_DIR}" \
+    --app="${LAUNCH_URL}" --enable-unsafe-webgpu --enable-features=Vulkan,WebGPU --ignore-gpu-blocklist
 fi
 
 exec xdg-open "${URL}"
