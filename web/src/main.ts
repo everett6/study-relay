@@ -123,6 +123,33 @@ function renderModelChip() {
 }
 
 // ------------------------------------------------------------------ Today
+let tunnelVision = localStorage.getItem("tunnel_vision") === "1";
+
+function timeUntilHardStop(s: State, t: Date): string {
+  const fixed = fixedSpans(s.rules, startOfDay(t), s.events)
+    .filter((f) => (f.kind === "dinner" || f.kind === "sleep" || f.kind === "event") && f.s > t)
+    .sort((a, b) => a.s.getTime() - b.s.getTime())[0];
+  if (!fixed) return "";
+  const m = Math.max(1, Math.round((fixed.s.getTime() - t.getTime()) / 60000));
+  const label = fixed.kind === "sleep" ? `${hm12(fmtLocal(fixed.s))} cutoff` : fixed.title;
+  return `${fmtMins(m)} left before ${label}`;
+}
+
+function winsTodayCount(s: State, today: string): number {
+  const doneBlocks = s.blocks.filter((b) => b.date === today && b.status === "done").length;
+  const doneSteps = s.tasks.filter((x) => x.first_step_done).length;
+  const doneSess = s.sessions.filter((se) => se.ended_at?.startsWith(today)).length;
+  return doneBlocks + doneSteps + doneSess;
+}
+
+async function generateFirstStep(t: Task): Promise<string> {
+  const clean = t.title.replace(/^[^:]+:\s*/, "");
+  if (/essay|paper|draft|writing/i.test(clean)) return `Open the doc for "${clean}" and write 3 rough bullet points.`;
+  if (/lab|report/i.test(clean)) return `Create the doc/header for "${clean}" and paste your data table.`;
+  if (/read|chapter|notes/i.test(clean)) return `Open "${clean}", skim the headings, and write 2 quick lines.`;
+  return `Open "${clean}" and complete just problem #1 (or the first 2 minutes).`;
+}
+
 function Today(s: State) {
   const t = now();
   const m = s.momentum;
@@ -133,11 +160,23 @@ function Today(s: State) {
   const blocks = s.blocks.filter((b) => b.date === today).sort((a, b) => a.start.localeCompare(b.start));
   const next = s.blocks.filter((b) => b.status === "planned" && parseLocal(b.end) > t).sort((a, b) => a.start.localeCompare(b.start))[0];
   const live = next && parseLocal(next.start) <= t;
+  const hardStop = timeUntilHardStop(s, t);
+  const wins = winsTodayCount(s, today);
   const fixed = fixedSpans(s.rules, startOfDay(t), s.events).filter((f) => f.kind !== "blackout" || f.title !== "Skipped block");
   // Only what's still ahead (plus what's already done today). Slipped blocks were re-planned, so they're noise here.
   const shown = blocks.filter((b) => b.status === "done" || (b.status === "planned" && parseLocal(b.end) > t));
   const items: { at: string; node: HTMLElement }[] = [];
-  for (const b of shown) items.push({ at: b.start, node: BlockRow(b, next?.id === b.id) });
+  for (let i = 0; i < shown.length; i++) {
+    const b = shown[i];
+    items.push({ at: b.start, node: BlockRow(b, next?.id === b.id) });
+    const nxt = shown[i + 1];
+    if (nxt && b.status === "planned" && nxt.status === "planned") {
+      const gap = Math.round((parseLocal(nxt.start).getTime() - parseLocal(b.end).getTime()) / 60000);
+      if (gap >= 5 && gap <= 20) {
+        items.push({ at: b.end, node: h("li", { class: "transition-buf" }, `Transition / reset · ${gap} min (water, stretch, close tabs)`) });
+      }
+    }
+  }
   for (const f of fixed) if (f.e > t && f.kind !== "break")
     items.push({ at: fmtLocal(f.s), node: h("li", { class: `fixed ${f.kind}` }, h("time", null, hm12(fmtLocal(f.s))), h("span", null, fixedLabel(f.kind, f.title))) });
   items.sort((a, b) => a.at.localeCompare(b.at));
@@ -146,13 +185,66 @@ function Today(s: State) {
   const left = shown.filter((b) => b.status === "planned").reduce((a, b) => a + mins(b), 0);
   const risks = s.meta.at_risk;
 
+  const tunnelBtn = h("button", {
+    type: "button",
+    class: `btn sm ${tunnelVision ? "primary" : "ghost"}`,
+    onclick: () => { tunnelVision = !tunnelVision; localStorage.setItem("tunnel_vision", tunnelVision ? "1" : "0"); render(); },
+  }, tunnelVision ? "Show full day" : "Now Only");
+
+  if (tunnelVision) {
+    const linkedTask = next?.task_id ? s.tasks.find((x) => x.id === next.task_id) : undefined;
+    const totalM = next ? mins(next) : 25;
+    const elapsedM = live && next ? Math.max(0, (t.getTime() - parseLocal(next.start).getTime()) / 60000) : 0;
+    const remM = Math.max(0, Math.round(totalM - elapsedM));
+    const frac = Math.min(1, elapsedM / Math.max(1, totalM));
+    return [
+      h("div", { class: "row", style: "justify-content:space-between;align-items:center" },
+        h("div", { class: "row wrap" },
+          hardStop ? h("span", { class: "hard-stop" }, hardStop) : null,
+          h("span", { class: "wins-pill" }, `${wins} win${wins === 1 ? "" : "s"} today`)),
+        tunnelBtn),
+      next ? h("section", { class: `card now-only ${color(next)}` },
+        h("span", { class: "pill", style: "justify-self:center" }, live ? "One thing right now" : `Next up · ${relTime(parseLocal(next.start), t)}`),
+        h("h1", { style: "margin:0" }, next.title),
+        h("div", { class: "now-only-ring" },
+          ring(frac, 150, 11),
+          h("div", { class: "now-only-time" }, `${remM}m`)),
+        linkedTask?.first_step ? h("label", { class: `first-step ${linkedTask.first_step_done ? "done" : ""}` },
+          h("input", { type: "checkbox", checked: !!linkedTask.first_step_done, onchange: () => {
+            store.update((st) => {
+              const tk = st.tasks.find((x) => x.id === linkedTask.id);
+              if (tk) tk.first_step_done = !tk.first_step_done;
+            });
+            if (!linkedTask.first_step_done) { navigator.vibrate?.([30, 40, 60]); confetti(); }
+          } }),
+          h("span", null, linkedTask.first_step)) : null,
+        h("div", { class: "row center wrap" },
+          h("button", { class: "btn primary big", onclick: () => engine.timerStart({ blockId: next.id, minutes: 5 }) }, svg(ICON.play), "Start 5-Min Micro-Start"),
+          h("button", { class: "btn ghost big", onclick: async () => {
+            if (!linkedTask) { openBlock(next); return; }
+            const stepTxt = await generateFirstStep(linkedTask);
+            store.update((st) => {
+              const tk = st.tasks.find((x) => x.id === linkedTask.id);
+              if (tk) { tk.first_step = stepTxt; tk.first_step_done = false; }
+            });
+          } }, "Stuck / Break Down"))) :
+        h("section", { class: "card now-only" },
+          h("h2", null, "Nothing else queued today"),
+          h("p", { class: "muted" }, "Take the rest of the evening guilt-free.")),
+    ];
+  }
+
   return [
     h("section", { class: `card status ${mode}`, style: "--i:0", title: copy.line },
       h("span", { class: "status-ico", "aria-hidden": "true" }, svg(MODE_ICON[mode])),
       h("div", { class: "status-text" },
         h("b", null, copy.title),
-        h("small", null, missedToday ? `${missedToday} block${missedToday > 1 ? "s" : ""} slipped today. I moved that work later.`
+        h("small", null, missedToday ? `${missedToday} block${missedToday > 1 ? "s" : ""} rolled over. Adjusted later for you.`
           : rec.total ? `${Number.isInteger(rec.hits) ? rec.hits : rec.hits.toFixed(1)} of your last ${rec.total} blocks done` : copy.line)),
+      h("div", { class: "row wrap", style: "gap:6px;align-items:center" },
+        h("span", { class: "wins-pill" }, `${wins} win${wins === 1 ? "" : "s"} today`),
+        hardStop ? h("span", { class: "hard-stop" }, hardStop) : null,
+        tunnelBtn),
       h("div", { class: "mood", role: "group", "aria-label": "How are you feeling?" },
         ...["😫", "😕", "🙂", "😊", "🤩"].map((e, i) => h("button", { class: "emoji", title: ["Rough", "Meh", "Okay", "Good", "Great"][i], "aria-label": `Feeling ${["rough", "meh", "okay", "good", "great"][i]}`,
           onclick: () => { engine.checkIn(i + 1); toast(i < 2 ? "Thanks. I lightened things up a bit." : "Nice! Keeping the plan rolling.", "ok"); } }, e)))),
@@ -217,7 +309,11 @@ function relTime(d: Date, t: Date) {
 }
 
 function BlockRow(b: Block, isNext = false) {
-  return h("li", { class: `blk ${color(b)} ${b.status} ${isNext ? "is-next" : ""}`, tabindex: "0", title: b.title, onclick: () => openBlock(b), onkeydown: (e: KeyboardEvent) => { if (e.key === "Enter") openBlock(b); } },
+  const t = now();
+  const sT = parseLocal(b.start).getTime(), eT = parseLocal(b.end).getTime();
+  const draining = b.status === "planned" && sT <= t.getTime() && eT > t.getTime();
+  const fill = draining ? Math.max(0, Math.min(1, (t.getTime() - sT) / Math.max(1, eT - sT))) : 0;
+  return h("li", { class: `blk ${color(b)} ${b.status} ${isNext ? "is-next" : ""} ${draining ? "draining" : ""}`, style: draining ? `--fill:${fill.toFixed(3)}` : undefined, tabindex: "0", title: b.title, onclick: () => openBlock(b), onkeydown: (e: KeyboardEvent) => { if (e.key === "Enter") openBlock(b); } },
     h("time", null, hm12(b.start)),
     h("div", { class: "blk-body" },
       h("b", null, shortTitle(b)),
@@ -481,7 +577,7 @@ let openTaskId: string | null = null;
 function dueText(due: Date, t: Date): string {
   const d = Math.round((startOfDay(due).getTime() - startOfDay(t).getTime()) / 86400000);
   const time = hm12(fmtLocal(due));
-  if (d < 0) return `${-d} day${d < -1 ? "s" : ""} overdue`;
+  if (d < 0) return `Rolled over · ${-d}d`;
   if (d === 0) return `today ${time}`;
   if (d === 1) return `tomorrow ${time}`;
   return `${due.toLocaleDateString("en-US", { weekday: "short", month: d > 6 ? "short" : undefined, day: d > 6 ? "numeric" : undefined })} ${time}`;
@@ -500,7 +596,7 @@ function TaskRow(t: Task) {
       h("div", { class: "trow-text" },
         h("b", null, t.title),
         h("small", null, [t.course || "Personal", TASK_TYPE[t.category] ?? t.task_type, submit].filter(Boolean).join(" · "),
-          due ? h("span", { class: `due ${hrs < 0 ? "late" : hrs < 24 ? "soon" : ""}` }, ` · ${dueText(due, now())}`) : null,
+          due ? h("span", { class: `due ${hrs < 0 ? "rolled" : hrs < 24 ? "soon" : ""}` }, ` · ${dueText(due, now())}`) : null,
           needsDueCheck(t) ? h("span", { class: "pill warm", style: "margin-left:6px", title: "Imported deadline — verify due time" }, "Check due") : null)),
       h("span", { class: "trow-min", title: t.est_source === "human" ? "your estimate" : "estimated" }, est ? fmtMins(est) : "—")),
     h("button", { class: "icon-btn sm done-btn", "aria-label": `Mark ${t.title} done`, title: "Done", onclick: () => { engine.markDone(t.id); confetti(); } }, svg(ICON.check)));
@@ -515,6 +611,12 @@ function TaskDetail(t: Task, est: number, desc: string) {
     } });
   const step = (d: number) => { const v = Math.max(5, (Number(input.value) || est) + d); input.value = String(v); input.dispatchEvent(new Event("change")); };
   return h("div", { class: "trow-detail" },
+    t.first_step ? h("label", { class: `first-step ${t.first_step_done ? "done" : ""}` },
+      h("input", { type: "checkbox", checked: !!t.first_step_done, onchange: () => {
+        store.update((st) => { const tk = st.tasks.find((x) => x.id === t.id); if (tk) tk.first_step_done = !tk.first_step_done; });
+        if (!t.first_step_done) { navigator.vibrate?.([30, 40, 60]); confetti(); }
+      } }),
+      h("span", null, t.first_step)) : null,
     desc ? h("p", { class: "desc" }, desc.length > 320 ? desc.slice(0, 320) + "…" : desc) : null,
     t.est_why ? h("p", { class: "muted small" }, `Why ${est} min: ${t.est_why}`) : null,
     h("div", { class: "detail-grid" },
@@ -524,9 +626,13 @@ function TaskDetail(t: Task, est: number, desc: string) {
       h("div", null, h("small", { class: "lbl" }, "Difficulty"),
         h("div", { class: "seg", role: "radiogroup", "aria-label": "Difficulty" }, [1, 2, 3, 4, 5].map((n) =>
           h("button", { class: n === t.cognitive_load ? "on" : "", role: "radio", "aria-checked": String(n === t.cognitive_load), title: ["Easy", "Light", "Normal", "Hard", "Very hard"][n - 1], onclick: () => engine.setTaskLoad(t.id, n) }, String(n)))))),
-    h("div", { class: "row" },
+    h("div", { class: "row wrap" },
       h("button", { class: "btn primary sm", onclick: () => engine.timerStart({ taskId: t.id, bucket: SCHOOL }) }, svg(ICON.play), "Focus now"),
-      h("button", { class: "btn ghost sm", onclick: () => { engine.markDone(t.id); confetti(); } }, svg(ICON.check), "Done")));
+      h("button", { class: "btn ghost sm", onclick: async () => {
+        const sTxt = await generateFirstStep(t);
+        store.update((st) => { const tk = st.tasks.find((x) => x.id === t.id); if (tk) { tk.first_step = sTxt; tk.first_step_done = false; } });
+      } }, "⚡ 2-Min First Step"),
+      h("button", { class: "btn ghost sm", onclick: () => { navigator.vibrate?.([30, 40, 60]); engine.markDone(t.id); confetti(); } }, svg(ICON.check), "Done")));
 }
 
 // ------------------------------------------------------------------ Grades & subject focus
@@ -773,12 +879,27 @@ function renderFocus() {
       value: t.next_action ?? "",
       onchange: (e: Event) => engine.setTimerNextAction((e.target as HTMLInputElement).value),
     });
+    const dumpInp = h("input", {
+      class: "brain-dump",
+      placeholder: "💭 Park a thought (drops straight into Inbox)…",
+      onkeydown: (e: KeyboardEvent) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const txt = dumpInp.value.trim();
+          if (!txt) return;
+          engine.addInbox({ source: "thought", from: "Focus Brain Dump", subject: txt, text: txt, tags: ["brain-dump"] });
+          dumpInp.value = "";
+          toast("Parked in Inbox — keep going!", "ok");
+        }
+      },
+    });
     focusEl = h("div", { class: `focus ${COLORS[t.bucket ?? SCHOOL] ?? "teal"}`, role: "dialog", "aria-label": "Study mode" },
       h("div", { class: "focus-inner" },
         h("small", { class: "focus-kicker" }, "Study mode"),
         h("h1", { id: "focus-title" }),
         nextInp,
         h("div", { class: "focus-dial" }, h("div", { class: "focus-ring", id: "focus-ring" }), h("div", { class: "focus-time", id: "focus-time" })),
+        dumpInp,
         h("div", { class: "row center" },
           h("button", { class: "btn glass big", id: "focus-pp", onclick: () => store.state.timer.state === "running" ? engine.timerPause() : engine.timerResume() }),
           h("button", { class: "btn primary big", onclick: openFinish }, svg(ICON.check), "Finish")),

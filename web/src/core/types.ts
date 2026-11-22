@@ -58,6 +58,8 @@ export interface Task {
   logged_minutes: number;
   status: "open" | "done";
   preclear_by?: string;
+  first_step?: string;
+  first_step_done?: boolean;
   updated_at?: number;
   deleted_at?: number;
 }
@@ -163,7 +165,7 @@ export interface CfCSnapshot {
 
 export interface InboxItem {
   id: string;
-  source: "discord" | "email" | "screenshot" | "canvas";
+  source: "discord" | "email" | "screenshot" | "canvas" | "thought";
   external_id: string;
   from: string;
   subject: string;

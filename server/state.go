@@ -92,6 +92,8 @@ type Task struct {
 	LoggedMinutes float64  `json:"logged_minutes"`
 	Status        string   `json:"status"` // open | done
 	PreclearBy    string   `json:"preclear_by,omitempty"`
+	FirstStep     string   `json:"first_step,omitempty"`
+	FirstStepDone bool     `json:"first_step_done,omitempty"`
 	UpdatedAt     int64    `json:"updated_at,omitempty"`
 	DeletedAt     int64    `json:"deleted_at,omitempty"`
 }

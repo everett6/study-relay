@@ -455,6 +455,23 @@ label.check { display: flex; align-items: center; gap: 8px; }
 .gpu-note { padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--warn) 12%, transparent); display: grid; gap: 8px; font-size: 0.9rem; }
 .gpu-note[hidden] { display: none; }
 
+/* ---------- ADHD Executive-Function & Visual Time Anchors ---------- */
+.hard-stop { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 0.8rem; font-weight: 700; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+.wins-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 0.8rem; font-weight: 700; background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.blk.draining { position: relative; overflow: hidden; }
+.blk.draining::before { content: ""; position: absolute; inset: 0; width: calc(var(--fill, 0) * 100%); background: linear-gradient(90deg, rgba(124,92,255,0.16), rgba(34,195,230,0.10)); pointer-events: none; transition: width 0.6s ease; }
+.blk.draining > * { position: relative; z-index: 1; }
+.transition-buf { display: flex; align-items: center; gap: 10px; padding: 5px 12px; margin: 2px 0; border-radius: 8px; font-size: 0.78rem; color: var(--muted); background: repeating-linear-gradient(-45deg, rgba(128,128,128,0.06), rgba(128,128,128,0.06) 6px, transparent 6px, transparent 12px); border: 1px dashed var(--line); }
+.now-only { display: grid; gap: 16px; text-align: center; padding: 26px 22px; border-radius: 20px; }
+.now-only-ring { position: relative; display: inline-grid; place-items: center; margin: 0 auto; }
+.now-only-time { position: absolute; font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.first-step { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); font-size: 0.88rem; margin-bottom: 8px; text-align: left; }
+.first-step input { width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
+.first-step.done span { text-decoration: line-through; opacity: 0.65; }
+.brain-dump { width: 100%; max-width: 420px; margin: 6px auto 0; padding: 10px 14px; border-radius: 99px; border: 1px solid rgba(255,255,255,0.22); background: rgba(255,255,255,0.12); color: inherit; font: inherit; font-size: 0.92rem; text-align: center; }
+.brain-dump::placeholder { color: rgba(255,255,255,0.72); }
+.due.rolled { color: #d97706; background: color-mix(in srgb, #f59e0b 14%, transparent); padding: 1px 7px; border-radius: 99px; font-weight: 600; }
+
 /* ---------- task list (replaces the card grid) ---------- */
 .card-head.pad > div > small { display: block; margin-top: 2px; }
 .tasklist { padding: 6px 0; }
