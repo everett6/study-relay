@@ -11,11 +11,32 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-var matrixRunning atomic.Bool
+var (
+	matrixRunning atomic.Bool
+	piLLMMu       sync.Mutex
+	piLLMCmd      *exec.Cmd
+	piLLMLastSeen atomic.Int64
+)
+
+func (s *Server) touchPresence() {
+	piLLMLastSeen.Store(time.Now().Unix())
+}
+
+func stopPiLLM() {
+	piLLMMu.Lock()
+	cmd := piLLMCmd
+	piLLMCmd = nil
+	piLLMMu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+}
 
 type matrixEstimateJSON struct {
 	TaskType      string  `json:"task_type"`
@@ -36,8 +57,9 @@ func unestimatedOpenTasks(st *State) []Task {
 }
 
 // estimateTaskViaEndpoint queries an OpenAI-compatible /v1/chat/completions endpoint
-// (ephemeral Pi llama-server or Relay AI) for a task's time estimate using directions & comments.
-func estimateTaskViaEndpoint(ctx context.Context, client *http.Client, baseURL, model string, t Task) (*matrixEstimateJSON, error) {
+// (ephemeral Pi llama-server or Relay AI) for a task's time estimate using directions, comments,
+// and few-shot calibration examples from correction_history.
+func estimateTaskViaEndpoint(ctx context.Context, client *http.Client, baseURL, model string, t Task, examples ...CorrectionExample) (*matrixEstimateJSON, error) {
 	dirs := t.Description
 	if len(dirs) > 1200 {
 		dirs = dirs[:1200]
@@ -57,6 +79,12 @@ func estimateTaskViaEndpoint(ctx context.Context, client *http.Client, baseURL, 
 		t.Course, t.Title, t.Category, pts, dirs)
 	if cmts != "" {
 		userMsg += "\nTeacher/Submission Comments: " + cmts
+	}
+	if len(examples) > 0 {
+		userMsg += "\nStudent's past actual times (calibrate pace to these):"
+		for _, ex := range examples {
+			userMsg += fmt.Sprintf("\n- %s | %s = %d min", ex.Course, ex.Title, ex.Actual)
+		}
 	}
 
 	body, _ := json.Marshal(map[string]any{
@@ -149,19 +177,17 @@ func (s *Server) runPiMatrixBatch(ctx context.Context) (int, error) {
 		port = 18089
 	}
 	portStr := strconv.Itoa(port)
-	cmd := exec.CommandContext(bCtx, "ionice", "-c", "3", "nice", "-n", "19", "taskset", "-c", "3",
+	cmd := exec.CommandContext(bCtx, "ionice", "-c", "3", "nice", "-n", "19", "taskset", "-c", "0",
 		s.cfg.MatrixLlamaBin, "-m", s.cfg.MatrixGGUFPath,
 		"--host", "127.0.0.1", "--port", portStr,
-		"-c", "1024", "-t", "1", "-np", "1", "--no-warmup", "--log-disable")
+		"-c", "1024", "-t", "1", "-tb", "1", "-np", "1", "--no-warmup", "--log-disable")
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start ephemeral llama-server: %w", err)
 	}
-	defer func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
-	}()
+	piLLMMu.Lock()
+	piLLMCmd = cmd
+	piLLMMu.Unlock()
+	defer stopPiLLM()
 
 	baseURL := "http://127.0.0.1:" + portStr
 	hc := &http.Client{Timeout: 90 * time.Second}
@@ -189,7 +215,8 @@ func (s *Server) runPiMatrixBatch(ctx context.Context) (int, error) {
 		if bCtx.Err() != nil {
 			break
 		}
-		est, err := estimateTaskViaEndpoint(bCtx, hc, baseURL, "lfm3", t)
+		examples := s.store.RecentCorrections(t.Course, 4)
+		est, err := estimateTaskViaEndpoint(bCtx, hc, baseURL, "lfm3", t, examples...)
 		if err != nil {
 			continue
 		}
@@ -238,4 +265,39 @@ func (s *Server) triggerPiMatrixAsync() {
 	go func() {
 		_, _ = s.runPiMatrixBatch(context.Background())
 	}()
+}
+
+// idleUnloadLoop ensures any warm Core-0 llama-server unloads after 3 minutes of inactivity.
+func (s *Server) idleUnloadLoop(ctx context.Context) {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			stopPiLLM()
+			return
+		case <-t.C:
+			last := piLLMLastSeen.Load()
+			if last > 0 && time.Since(time.Unix(last, 0)) > 3*time.Minute && !matrixRunning.Load() {
+				stopPiLLM()
+			}
+		}
+	}
+}
+
+// hourlyBatchLoop runs once per hour to score any un-estimated open tasks on Core 0 and unload.
+func (s *Server) hourlyBatchLoop(ctx context.Context) {
+	if s.cfg.MatrixLlamaBin == "" || s.cfg.MatrixGGUFPath == "" {
+		return
+	}
+	t := time.NewTicker(1 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_, _ = s.runPiMatrixBatch(ctx)
+		}
+	}
 }

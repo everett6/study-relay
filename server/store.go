@@ -1,10 +1,16 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,12 +35,13 @@ func OpenStore(path string) (*Store, error) {
 	db.SetMaxOpenConns(1) // one connection: tiny memory, serialised writes
 	db.SetMaxIdleConns(1)
 	for _, p := range []string{
-		"PRAGMA cache_size=-2000;", // 2 MB page cache
-		"PRAGMA journal_mode=WAL;",
-		"PRAGMA synchronous=NORMAL;",
-		"PRAGMA mmap_size=0;",
-		"PRAGMA temp_store=MEMORY;",
-		"PRAGMA busy_timeout=3000;",
+		"PRAGMA journal_mode = WAL;",
+		"PRAGMA synchronous = NORMAL;",
+		"PRAGMA busy_timeout = 5000;",
+		"PRAGMA foreign_keys = ON;",
+		"PRAGMA cache_size = -2000;",
+		"PRAGMA mmap_size = 0;",
+		"PRAGMA temp_store = MEMORY;",
 		`CREATE TABLE IF NOT EXISTS state (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
 			version INTEGER NOT NULL,
@@ -46,6 +53,18 @@ func OpenStore(path string) (*Store, error) {
 			actor TEXT NOT NULL,
 			action TEXT NOT NULL,
 			detail TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS inbox_dedup (
+			source_msg_id TEXT PRIMARY KEY,
+			seen_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS correction_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_id TEXT NOT NULL UNIQUE,
+			course TEXT NOT NULL,
+			title TEXT NOT NULL,
+			category TEXT NOT NULL,
+			estimated_minutes INTEGER NOT NULL,
+			actual_minutes INTEGER NOT NULL,
+			at TEXT NOT NULL)`,
 	} {
 		if _, err := db.Exec(p); err != nil {
 			db.Close()
@@ -191,4 +210,205 @@ func (s *Store) Update(fn func(*State) error) (int64, *State, error) {
 	}
 	nv, err := s.putLocked(v, st)
 	return nv, st, err
+}
+
+// RecordCorrection persists a human -/+ stepper estimate correction for few-shot LFM calibration.
+func (s *Store) RecordCorrection(t Task) {
+	if t.HumanMinutes == nil || *t.HumanMinutes <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = s.db.Exec(
+		`INSERT INTO correction_history (task_id, course, title, category, estimated_minutes, actual_minutes, at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(task_id) DO UPDATE SET actual_minutes = excluded.actual_minutes, at = excluded.at`,
+		t.ID, t.Course, t.Title, t.Category, t.LLMMinutes, *t.HumanMinutes, time.Now().UTC().Format(time.RFC3339),
+	)
+}
+
+type CorrectionExample struct {
+	Course    string
+	Title     string
+	Estimated int
+	Actual    int
+}
+
+// RecentCorrections returns the latest human estimate corrections (same course prioritized).
+func (s *Store) RecentCorrections(course string, limit int) []CorrectionExample {
+	if limit <= 0 {
+		limit = 4
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(
+		`SELECT course, title, estimated_minutes, actual_minutes
+		 FROM correction_history
+		 ORDER BY (LOWER(course) = LOWER(?)) DESC, id DESC
+		 LIMIT ?`, course, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []CorrectionExample
+	for rows.Next() {
+		var c CorrectionExample
+		if rows.Scan(&c.Course, &c.Title, &c.Estimated, &c.Actual) == nil {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// RecordInboxMsgID atomically records a source message ID; returns false if already seen.
+func (s *Store) RecordInboxMsgID(id string) bool {
+	if id == "" {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec("INSERT OR IGNORE INTO inbox_dedup (source_msg_id, seen_at) VALUES (?, ?)", id, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return true
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
+}
+
+// MergeLWWState merges incoming Tasks, Blocks, and Events into base using entity-level
+// Last-Write-Wins timestamps (updated_at / deleted_at tombstones).
+func MergeLWWState(base, inc *State) *State {
+	if base == nil {
+		return inc
+	}
+	if inc == nil {
+		return base
+	}
+	out := *base
+	if inc.Timer.StartedAt >= base.Timer.StartedAt {
+		out.Timer = inc.Timer
+	}
+
+	taskMap := map[string]Task{}
+	for _, t := range base.Tasks {
+		taskMap[t.ID] = t
+	}
+	for _, t := range inc.Tasks {
+		cur, ok := taskMap[t.ID]
+		if !ok || t.UpdatedAt >= cur.UpdatedAt {
+			taskMap[t.ID] = t
+		}
+	}
+	out.Tasks = make([]Task, 0, len(taskMap))
+	for _, t := range taskMap {
+		if t.DeletedAt == 0 {
+			out.Tasks = append(out.Tasks, t)
+		}
+	}
+
+	blockMap := map[string]Block{}
+	for _, b := range base.Blocks {
+		blockMap[b.ID] = b
+	}
+	for _, b := range inc.Blocks {
+		cur, ok := blockMap[b.ID]
+		if !ok || b.UpdatedAt >= cur.UpdatedAt {
+			blockMap[b.ID] = b
+		}
+	}
+	out.Blocks = make([]Block, 0, len(blockMap))
+	for _, b := range blockMap {
+		if b.DeletedAt == 0 {
+			out.Blocks = append(out.Blocks, b)
+		}
+	}
+
+	evMap := map[string]Event{}
+	for _, e := range base.Events {
+		evMap[e.ID] = e
+	}
+	for _, e := range inc.Events {
+		cur, ok := evMap[e.ID]
+		if !ok || e.UpdatedAt >= cur.UpdatedAt {
+			evMap[e.ID] = e
+		}
+	}
+	out.Events = make([]Event, 0, len(evMap))
+	for _, e := range evMap {
+		if e.DeletedAt == 0 {
+			out.Events = append(out.Events, e)
+		}
+	}
+	return &out
+}
+
+// PutLWW merges incoming state entity-by-entity on version mismatch instead of overwriting.
+func (s *Store) PutLWW(base int64, inc *State) (int64, *State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, cur, err := s.getLocked()
+	if err != nil {
+		return 0, nil, err
+	}
+	if v == base {
+		nv, err := s.putLocked(base, inc)
+		return nv, inc, err
+	}
+	merged := MergeLWWState(cur, inc)
+	nv, err := s.putLocked(v, merged)
+	return nv, merged, err
+}
+
+// BackupOnce writes a zero-downtime SQLite snapshot via VACUUM INTO and prunes backups > 7 days old.
+func (s *Store) BackupOnce(dir string, now time.Time) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	dst := filepath.Join(dir, "study-"+now.Format("2006-01-02")+".db")
+	_ = os.Remove(dst)
+	s.mu.Lock()
+	_, err := s.db.Exec("VACUUM INTO '" + strings.ReplaceAll(dst, "'", "''") + "'")
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "study-") && strings.HasSuffix(e.Name(), ".db") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for len(names) > 7 {
+		_ = os.Remove(filepath.Join(dir, names[0]))
+		names = names[1:]
+	}
+	return nil
+}
+
+// BackupLoop runs a daily zero-downtime SQLite backup while ctx is active.
+func (s *Store) BackupLoop(ctx context.Context, dbPath string) {
+	if dbPath == "" || dbPath == ":memory:" || strings.HasPrefix(dbPath, "file:") {
+		return
+	}
+	dir := filepath.Join(filepath.Dir(dbPath), "backups")
+	if err := s.BackupOnce(dir, time.Now()); err != nil {
+		log.Printf("sqlite backup warning: %v", err)
+	}
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			if err := s.BackupOnce(dir, now); err != nil {
+				log.Printf("sqlite backup warning: %v", err)
+			}
+		}
+	}
 }

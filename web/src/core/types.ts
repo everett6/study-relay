@@ -58,6 +58,8 @@ export interface Task {
   logged_minutes: number;
   status: "open" | "done";
   preclear_by?: string;
+  updated_at?: number;
+  deleted_at?: number;
 }
 
 export interface CalEvent {
@@ -66,6 +68,8 @@ export interface CalEvent {
   kind: "event" | "blackout";
   start: string;
   end: string;
+  updated_at?: number;
+  deleted_at?: number;
 }
 
 export interface Block {
@@ -81,6 +85,8 @@ export interface Block {
   quiet: boolean;
   locked: boolean;
   status: "planned" | "done" | "missed";
+  updated_at?: number;
+  deleted_at?: number;
 }
 
 export interface Timer {

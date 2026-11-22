@@ -92,29 +92,35 @@ type Task struct {
 	LoggedMinutes float64  `json:"logged_minutes"`
 	Status        string   `json:"status"` // open | done
 	PreclearBy    string   `json:"preclear_by,omitempty"`
+	UpdatedAt     int64    `json:"updated_at,omitempty"`
+	DeletedAt     int64    `json:"deleted_at,omitempty"`
 }
 
 type Event struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Kind  string `json:"kind"` // event | blackout
-	Start string `json:"start"`
-	End   string `json:"end"`
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Kind      string `json:"kind"` // event | blackout
+	Start     string `json:"start"`
+	End       string `json:"end"`
+	UpdatedAt int64  `json:"updated_at,omitempty"`
+	DeletedAt int64  `json:"deleted_at,omitempty"`
 }
 
 type Block struct {
-	ID     string `json:"id"`
-	Date   string `json:"date"`
-	Start  string `json:"start"`
-	End    string `json:"end"`
-	Kind   string `json:"kind"` // task | bucket
-	TaskID string `json:"task_id,omitempty"`
-	Bucket string `json:"bucket"`
-	Title  string `json:"title"`
-	Load   int    `json:"load"`
-	Quiet  bool   `json:"quiet"`
-	Locked bool   `json:"locked"`
-	Status string `json:"status"` // planned | done
+	ID        string `json:"id"`
+	Date      string `json:"date"`
+	Start     string `json:"start"`
+	End       string `json:"end"`
+	Kind      string `json:"kind"` // task | bucket
+	TaskID    string `json:"task_id,omitempty"`
+	Bucket    string `json:"bucket"`
+	Title     string `json:"title"`
+	Load      int    `json:"load"`
+	Quiet     bool   `json:"quiet"`
+	Locked    bool   `json:"locked"`
+	Status    string `json:"status"` // planned | done
+	UpdatedAt int64  `json:"updated_at,omitempty"`
+	DeletedAt int64  `json:"deleted_at,omitempty"`
 }
 
 type Timer struct {

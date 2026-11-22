@@ -914,3 +914,50 @@ func TestPasswordLogin(t *testing.T) {
 		t.Fatalf("expected 200 with token, got %d %s", ok.Code, ok.Body.String())
 	}
 }
+
+func TestEmbeddedPresetsLWWAndBackup(t *testing.T) {
+	if p := findSchoolPreset("default"); p == nil || p.CanvasBaseURL != "https://instructure.com" {
+		t.Fatalf("default preset missing: %+v", p)
+	}
+	if p := findSchoolPreset("esuhsd"); p == nil || p.CanvasBaseURL != "https://esuhsd.instructure.com" {
+		t.Fatalf("esuhsd preset missing: %+v", p)
+	}
+
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "study.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	// Idempotent inbox dedup
+	if !store.RecordInboxMsgID("discord:123") || store.RecordInboxMsgID("discord:123") {
+		t.Fatal("expected second RecordInboxMsgID to return false")
+	}
+
+	// Entity-level LWW merge
+	base := &State{Tasks: []Task{{ID: "t1", Title: "Old", UpdatedAt: 100}, {ID: "t2", Title: "Keep", UpdatedAt: 200}}}
+	inc := &State{Tasks: []Task{{ID: "t1", Title: "New", UpdatedAt: 300}, {ID: "t2", Title: "Stale", UpdatedAt: 50}}}
+	merged := MergeLWWState(base, inc)
+	titles := map[string]string{}
+	for _, tk := range merged.Tasks {
+		titles[tk.ID] = tk.Title
+	}
+	if titles["t1"] != "New" || titles["t2"] != "Keep" {
+		t.Fatalf("unexpected LWW merge: %+v", titles)
+	}
+
+	// Zero-downtime SQLite backup via VACUUM INTO
+	if err := store.BackupOnce(filepath.Join(dir, "backups"), time.Now()); err != nil {
+		t.Fatalf("BackupOnce: %v", err)
+	}
+
+	// Demo seed populates realistic tasks and planned blocks
+	la, _ := time.LoadLocation("America/Los_Angeles")
+	s := NewServer(store, Config{}, la, time.Now)
+	seedDemoState(s)
+	_, st, err := store.Get()
+	if err != nil || len(st.Tasks) == 0 || len(st.Blocks) == 0 {
+		t.Fatalf("seedDemoState failed: err=%v tasks=%d blocks=%d", err, len(st.Tasks), len(st.Blocks))
+	}
+}

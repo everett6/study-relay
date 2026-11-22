@@ -1233,7 +1233,9 @@ function openSettings() {
         toast("Unavailable time blocked and preserved on replans.", "ok");
       } }, "Block time")),
     h("h3", null, "Connections"),
-    h("button", { type: "button", class: "btn", onclick: () => { close(); void openConnections(); } }, "Connect Discord, Gmail, Canvas & AI…"),
+    h("div", { class: "row wrap" },
+      h("button", { type: "button", class: "btn", onclick: () => { close(); void openConnections(); } }, "Connect Discord, Gmail, Canvas & AI…"),
+      h("button", { type: "button", class: "btn ghost", onclick: () => { close(); void openSetupWizard(); } }, "Setup Wizard")),
     h("label", null, "Canvas calendar feed (fallback)", ics),
     h("label", { class: "toggle" }, motion, h("span", null, "Animations")),
     h("div", { class: "row wrap", style: "justify-content:space-between" },
@@ -1483,6 +1485,80 @@ async function openConnections() {
   ), { wide: true, className: "connections-sheet", focusSelector: "#connection-tab-ai" });
 }
 
+async function openSetupWizard() {
+  let step = 1;
+  const presetsRes = await api<{ presets: { id: string; name: string; description: string; canvas_base_url?: string }[] }>("/api/presets").catch(() => ({ presets: [] }));
+  const presetSel = h("select", null,
+    ...(presetsRes.presets.length
+      ? presetsRes.presets.map((p) => h("option", { value: p.id }, `${p.name}`))
+      : [h("option", { value: "default" }, "Standard School (Generic)"), h("option", { value: "esuhsd" }, "East Side Union HSD (PHHS)")]));
+  const sleepInp = h("input", { type: "time", value: store.state.rules.sleep_cutoff || "22:30" });
+  const canvasUrl = h("input", { type: "url", value: "https://instructure.com", placeholder: "https://school.instructure.com" });
+  presetSel.onchange = () => {
+    const p = presetsRes.presets.find((x) => x.id === presetSel.value);
+    if (p?.canvas_base_url) canvasUrl.value = p.canvas_base_url;
+  };
+  const canvasTok = h("input", { type: "password", placeholder: "Canvas API Token", autocomplete: "off" });
+  const testOut = h("p", { class: "muted small" }, "");
+  const testBtn = h("button", {
+    type: "button",
+    class: "btn ghost sm",
+    onclick: async () => {
+      testOut.textContent = "Testing Canvas…";
+      await api("/api/integrations/config", { method: "POST", body: JSON.stringify({ canvas_base_url: canvasUrl.value.trim(), canvas_api_token: canvasTok.value.trim() }) }).catch(() => {});
+      const r = await api<Record<string, { ok: boolean; detail: string }>>("/api/integrations/test", {}).catch(() => null);
+      const c = r?.canvas;
+      testOut.textContent = c ? (c.ok ? `Connected: ${c.detail}` : `Error: ${c.detail}`) : "Could not reach server.";
+    },
+  }, "Test Connection");
+
+  const body = h("div", { class: "stack" });
+  const close = sheet("Welcome to Study Flow", body);
+  const draw = () => {
+    if (step === 1) {
+      body.replaceChildren(
+        h("p", { class: "muted small" }, "Step 1 of 3 · School & Sleep Schedule"),
+        h("label", null, "School preset", presetSel),
+        h("label", null, "Sleep cutoff", sleepInp),
+        h("div", { class: "row end" },
+          h("button", { type: "button", class: "btn ghost", onclick: () => { localStorage.setItem("setup_done", "1"); close(); } }, "Skip"),
+          h("button", { type: "button", class: "btn primary", onclick: async () => {
+            await api("/api/presets/apply", { method: "POST", body: JSON.stringify({ id: presetSel.value }) }).catch(() => {});
+            store.update((st) => { st.rules.sleep_cutoff = sleepInp.value || "22:30"; engine.replanInto(st); });
+            step = 2; draw();
+          } }, "Next")));
+    } else if (step === 2) {
+      body.replaceChildren(
+        h("p", { class: "muted small" }, "Step 2 of 3 · Connect Canvas"),
+        h("label", null, "Canvas URL", canvasUrl),
+        h("label", null, "Canvas API Token", canvasTok),
+        h("div", { class: "row" }, testBtn, testOut),
+        h("div", { class: "row end" },
+          h("button", { type: "button", class: "btn ghost", onclick: () => { step = 1; draw(); } }, "Back"),
+          h("button", { type: "button", class: "btn primary", onclick: async () => {
+            if (canvasTok.value.trim()) {
+              await api("/api/integrations/config", { method: "POST", body: JSON.stringify({ canvas_base_url: canvasUrl.value.trim(), canvas_api_token: canvasTok.value.trim() }) }).catch(() => {});
+            }
+            step = 3; draw();
+          } }, "Next")));
+    } else {
+      body.replaceChildren(
+        h("p", { class: "muted small" }, "Step 3 of 3 · Optional Integrations (Discord, Email, AI)"),
+        h("p", { class: "small" }, "You can connect Discord, Gmail, or OpenRouter/Ollama anytime in Settings → Connections."),
+        h("div", { class: "row wrap" },
+          h("button", { type: "button", class: "btn ghost", onclick: () => { close(); void openConnections(); } }, "Configure Discord / Email / AI…")),
+        h("div", { class: "row end" },
+          h("button", { type: "button", class: "btn primary", onclick: async () => {
+            localStorage.setItem("setup_done", "1");
+            close();
+            await loadIntegrations();
+            if (integrations.canvas_server_token) void doCanvasSync();
+          } }, "Finish")));
+    }
+  };
+  draw();
+}
+
 // ------------------------------------------------------------------ boot
 document.documentElement.dataset.motion = localStorage.getItem("motion") === "off" ? "off" : "on";
 let tokenHintShown = false;
@@ -1505,6 +1581,9 @@ document.addEventListener("keydown", (e) => {
   engine.cfc = CfCScheduler.fromJSON(store.state.cfc);
   engine.afterSync(true); // fresh plan on every open (time has moved on)
   await loadIntegrations();
+  if (!/\b401\b|bad relay token/.test(store.lastError) && (location.pathname === "/setup" || (!integrations.canvas_server_token && !store.state.tasks.length && !localStorage.getItem("setup_done")))) {
+    void openSetupWizard();
+  }
   if (!store.state.tasks.length && integrations.canvas_server_token) void doCanvasSync();
   else void engine.estimateMissing();
   void refreshGrades();

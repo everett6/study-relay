@@ -1,15 +1,20 @@
 package main
 
 import (
+	"embed"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
+	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
 )
+
+//go:embed presets/*.json
+var presetsFS embed.FS
 
 // withSecurityHeaders adds standard institutional security headers to every HTTP response.
 func withSecurityHeaders(next http.Handler) http.Handler {
@@ -26,6 +31,8 @@ type SchoolPreset struct {
 	ID             string            `json:"id"`
 	Name           string            `json:"name"`
 	Description    string            `json:"description"`
+	CanvasBaseURL  string            `json:"canvas_base_url,omitempty"`
+	IMAPFilters    string            `json:"imap_filters,omitempty"`
 	SchoolStart    string            `json:"school_start"`
 	SchoolEnd      string            `json:"school_end"`
 	SchoolEndByDay map[string]string `json:"school_end_by_day,omitempty"`
@@ -33,6 +40,42 @@ type SchoolPreset struct {
 	BlockMin       int               `json:"block_min"`
 	BreakMin       int               `json:"break_min"`
 	SleepCutoff    string            `json:"sleep_cutoff"`
+}
+
+func loadEmbeddedPresets() []SchoolPreset {
+	entries, err := fs.ReadDir(presetsFS, "presets")
+	if err != nil {
+		return nil
+	}
+	var out []SchoolPreset
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		if raw, err := fs.ReadFile(presetsFS, "presets/"+e.Name()); err == nil {
+			var p SchoolPreset
+			if json.Unmarshal(raw, &p) == nil && p.ID != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+func allSchoolPresets() []SchoolPreset {
+	emb := loadEmbeddedPresets()
+	seen := map[string]bool{}
+	out := make([]SchoolPreset, 0, len(emb)+len(schoolPresets))
+	for _, p := range emb {
+		seen[p.ID] = true
+		out = append(out, p)
+	}
+	for _, p := range schoolPresets {
+		if !seen[p.ID] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 var schoolPresets = []SchoolPreset{
@@ -70,7 +113,7 @@ var schoolPresets = []SchoolPreset{
 }
 
 func (s *Server) presetsHTTP(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"presets": schoolPresets})
+	writeJSON(w, http.StatusOK, map[string]any{"presets": allSchoolPresets()})
 }
 
 func (s *Server) applyPresetHTTP(w http.ResponseWriter, r *http.Request) {
@@ -90,16 +133,23 @@ func (s *Server) applyPresetHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *Server) toolApplyPreset(id string) (map[string]any, error) {
-	var found *SchoolPreset
-	for i := range schoolPresets {
-		if schoolPresets[i].ID == id {
-			found = &schoolPresets[i]
-			break
+func findSchoolPreset(id string) *SchoolPreset {
+	all := allSchoolPresets()
+	for i := range all {
+		if all[i].ID == id {
+			return &all[i]
 		}
 	}
+	return nil
+}
+
+func (s *Server) toolApplyPreset(id string) (map[string]any, error) {
+	found := findSchoolPreset(id)
 	if found == nil {
 		return nil, fmt.Errorf("unknown preset %q", id)
+	}
+	if found.CanvasBaseURL != "" && s.cfg.CanvasBase == "https://instructure.com" {
+		s.cfg.CanvasBase = found.CanvasBaseURL
 	}
 	var out Rules
 	_, _, err := s.store.Update(func(st *State) error {

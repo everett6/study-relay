@@ -200,6 +200,7 @@ func (s *Server) postSync(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		BaseVersion int64  `json:"base_version"`
 		State       *State `json:"state"`
+		LWW         bool   `json:"lww,omitempty"`
 	}
 	dec := json.NewDecoder(io.LimitReader(r.Body, maxStateBytes+1024))
 	if err := dec.Decode(&body); err != nil || body.State == nil {
@@ -208,6 +209,24 @@ func (s *Server) postSync(w http.ResponseWriter, r *http.Request) {
 	}
 	body.State.Meta.UpdatedBy = "browser"
 	body.State.Meta.UpdatedAt = s.now().Format(localLayout)
+	s.touchPresence()
+	for _, t := range body.State.Tasks {
+		if t.HumanMinutes != nil && t.EstSource == "human" {
+			s.store.RecordCorrection(t)
+		}
+	}
+	if body.LWW || r.URL.Query().Get("lww") == "1" {
+		nv, merged, err := s.store.PutLWW(body.BaseVersion, body.State)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(unestimatedOpenTasks(merged)) > 0 {
+			s.triggerPiMatrixAsync()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"version": nv, "state": merged})
+		return
+	}
 	nv, err := s.store.Put(body.BaseVersion, body.State)
 	if errors.Is(err, ErrConflict) {
 		v, cur, _ := s.store.Get()
@@ -410,22 +429,45 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "pair" {
 		os.Exit(pairCommand(os.Args[2:]))
 	}
+	demoMode := false
+	for _, a := range os.Args[1:] {
+		if a == "--demo" {
+			demoMode = true
+		}
+	}
 
 	loc, err := time.LoadLocation(env("TZ_NAME", "America/Los_Angeles"))
 	if err != nil {
 		log.Fatalf("timezone: %v", err)
 	}
-	store, err := OpenStore(env("RELAY_DB", "study-relay.db"))
+	dbPath := env("RELAY_DB", "study-relay.db")
+	if demoMode {
+		dbPath = ":memory:"
+	}
+	store, err := OpenStore(dbPath)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
 	defer store.Close()
+
+	presetID := env("SCHOOL_PRESET", "default")
+	preset := findSchoolPreset(presetID)
+	canvasDefault := "https://instructure.com"
+	if preset != nil {
+		if preset.CanvasBaseURL != "" {
+			canvasDefault = preset.CanvasBaseURL
+		}
+		if os.Getenv("IMAP_FILTERS") == "" && preset.IMAPFilters != "" {
+			_ = os.Setenv("IMAP_FILTERS", preset.IMAPFilters)
+		}
+	}
+
 	var origins []string
 	if o := os.Getenv("RELAY_ALLOWED_ORIGINS"); o != "" {
 		origins = strings.Split(o, ",")
 	}
 	addr := env("RELAY_ADDR", "127.0.0.1:8000") // this machine only unless asked; see relayToken
-	token, tokenFile, err := relayToken(addr, env("RELAY_DB", "study-relay.db"))
+	token, tokenFile, err := relayToken(addr, dbPath)
 	if err != nil {
 		log.Fatalf("relay token: %v", err)
 	}
@@ -435,7 +477,7 @@ func main() {
 	}
 	matrixPort, _ := strconv.Atoi(env("MATRIX_LLAMA_PORT", "18089"))
 	srv := NewServer(store, Config{
-		CanvasBase:      env("CANVAS_BASE_URL", "https://esuhsd.instructure.com"),
+		CanvasBase:      env("CANVAS_BASE_URL", canvasDefault),
 		Token:           token,
 		AllowedOrigins:  origins,
 		MatrixLlamaBin:  os.Getenv("MATRIX_LLAMA_BIN"),
@@ -445,6 +487,14 @@ func main() {
 		RelayPass:       os.Getenv("RELAY_PASS"),
 	}, loc, nil)
 	srv.integ = IntegrationsFromEnv()
+	if presetID != "" {
+		if v, cur, gerr := store.Get(); gerr == nil && v == 0 && len(cur.Tasks) == 0 {
+			_, _ = srv.toolApplyPreset(presetID)
+		}
+	}
+	if demoMode {
+		seedDemoState(srv)
+	}
 	hs := &http.Server{Addr: addr, Handler: srv.Routes(),
 		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 
@@ -458,8 +508,52 @@ func main() {
 	}()
 	go srv.pollLoop(ctx)
 	go srv.gradesLoop(ctx)
-	log.Printf("study-relay %s listening on %s (integrations: %v)", version, hs.Addr, srv.integ.Status())
+	go srv.idleUnloadLoop(ctx)
+	go srv.hourlyBatchLoop(ctx)
+	go store.BackupLoop(ctx, dbPath)
+	log.Printf("study-relay %s listening on %s (demo=%v preset=%s integrations: %v)", version, hs.Addr, demoMode, presetID, srv.integ.Status())
 	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+// seedDemoState populates an in-memory demo DB with realistic sample Canvas tasks,
+// mock club announcements, and a pre-planned week for --demo testing.
+func seedDemoState(s *Server) {
+	now := s.now()
+	_, _, _ = s.store.Update(func(st *State) error {
+		pts20, pts40, pts100 := 20.0, 40.0, 100.0
+		st.Tasks = []Task{
+			{
+				ID: "demo-1", Source: "canvas", Course: "AP Physics 1", Title: "Problem Set 7: Rotational Dynamics",
+				Description: "Problems 1-14, show free-body diagrams.", Category: "homework", TaskType: "HW",
+				Points: &pts20, DueAt: now.AddDate(0, 0, 1).Format(dateLayout) + "T23:59",
+				CognitiveLoad: 4, LLMMinutes: 45, EstMinutes: 45, Confidence: 0.85,
+				Blocks: []int{45}, EstSource: "llm", EstWhy: "14 rotational dynamics problems", Status: "open",
+			},
+			{
+				ID: "demo-2", Source: "canvas", Course: "AP Calculus BC", Title: "Unit 6 Integration Review",
+				Description: "Complete #1-25 odd.", Category: "homework", TaskType: "HW",
+				Points: &pts40, DueAt: now.AddDate(0, 0, 2).Format(dateLayout) + "T08:30",
+				CognitiveLoad: 4, LLMMinutes: 40, EstMinutes: 40, Confidence: 0.82,
+				Blocks: []int{40}, EstSource: "llm", EstWhy: "13 integration problems", Status: "open",
+			},
+			{
+				ID: "demo-3", Source: "canvas", Course: "English 1A", Title: "Essay Draft: Argument Synthesis",
+				Description: "1000 words, MLA citations.", Category: "project", TaskType: "Project",
+				Points: &pts100, DueAt: now.AddDate(0, 0, 4).Format(dateLayout) + "T23:59",
+				CognitiveLoad: 3, LLMMinutes: 90, EstMinutes: 90, Confidence: 0.8,
+				Blocks: []int{45, 45}, EstSource: "llm", EstWhy: "1000-word essay draft", Status: "open",
+			},
+		}
+		st.Inbox = []InboxItem{
+			{
+				ID: "demo-in-1", Source: "discord", From: "Robotics Club", Subject: "Build session moved to Thursday 4-6 PM",
+				Text:       "Heads up team — drivetrain CAD review is Thursday 4:00-6:00 PM in Room E12.",
+				ReceivedAt: now.Format(localLayout), Status: "new",
+			},
+		}
+		ReplanServer(st, now, s.newID, s.loc)
+		return nil
+	})
 }

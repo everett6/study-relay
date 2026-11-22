@@ -1,0 +1,14 @@
+{
+  "id": "esuhsd",
+  "name": "East Side Union HSD (PHHS)",
+  "description": "ESUHSD modified block: 8:30 AM start, 2:45 PM Mon/Tue/Fri, 2:00 PM Wed/Thu block days, ESUHSD Canvas & email filters.",
+  "canvas_base_url": "https://esuhsd.instructure.com",
+  "imap_filters": "esuhsd.org,counselor,robotics",
+  "school_start": "08:30",
+  "school_end": "14:45",
+  "school_end_by_day": { "3": "14:00", "4": "14:00" },
+  "after_school_min": 45,
+  "block_min": 45,
+  "break_min": 10,
+  "sleep_cutoff": "22:30"
+}

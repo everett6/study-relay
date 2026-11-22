@@ -1,0 +1,13 @@
+{
+  "id": "default",
+  "name": "Standard School (Generic)",
+  "description": "Generic high school / college schedule (8:30 AM - 3:30 PM, 45-min blocks, 10:30 PM sleep cutoff).",
+  "canvas_base_url": "https://instructure.com",
+  "imap_filters": "",
+  "school_start": "08:30",
+  "school_end": "15:30",
+  "after_school_min": 45,
+  "block_min": 45,
+  "break_min": 10,
+  "sleep_cutoff": "22:30"
+}

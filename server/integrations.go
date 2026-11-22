@@ -890,6 +890,7 @@ func (s *Server) pollOnce(ctx context.Context) (int, error) {
 		return 0, firstErr
 	}
 	added := 0
+	var addedMsgs []string
 	_, _, err := s.store.Update(func(st *State) error {
 		seen := map[string]bool{}
 		for _, it := range st.Inbox {
@@ -902,6 +903,9 @@ func (s *Server) pollOnce(ctx context.Context) (int, error) {
 			it.ID, it.Status = s.newID(), "new"
 			st.Inbox = append(st.Inbox, it)
 			seen[it.ExternalID] = true
+			if it.ExternalID != "" {
+				addedMsgs = append(addedMsgs, it.Source+":"+it.ExternalID)
+			}
 			added++
 		}
 		sort.SliceStable(st.Inbox, func(i, j int) bool { return st.Inbox[i].ReceivedAt < st.Inbox[j].ReceivedAt })
@@ -910,6 +914,9 @@ func (s *Server) pollOnce(ctx context.Context) (int, error) {
 		}
 		return nil
 	})
+	for _, k := range addedMsgs {
+		_ = s.store.RecordInboxMsgID(k)
+	}
 	if err == errNoChange {
 		err = nil
 	}
