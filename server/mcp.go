@@ -548,7 +548,7 @@ func (s *Server) handleRPC(rq rpcRequest) *rpcResponse {
 			},
 			"serverInfo": map[string]any{"name": "study-relay", "version": version},
 			"instructions": "Adaptive study scheduler. Times are local wall-clock (YYYY-MM-DDTHH:MM). " +
-				"Protected: school, 45-min after-school break, between-block breaks, 90-min dinner at 7 PM, 10:30 PM sleep cutoff. " +
+				"Protected: school, 45-min after-school break, between-block breaks, breakfast (08:30-09:00 / before morning blocks), weekend lunch (12:00-13:30), 90-min dinner at 7 PM, 10:30 PM sleep cutoff. Always keep breakfast and lunch protected when scheduling. " +
 				"FAST PATH: For today-only questions, call get_daily_briefing once. For multi-day scheduling, call get_planning_context once instead of chaining get_week_overview, get_grades, get_momentum_and_sessions, or search_tasks separately. " +
 				"To apply tasks, blocks, recurring rules, and break/cutoff updates, call batch_update_schedule once with all actions.",
 		}, nil)
