@@ -135,14 +135,14 @@ const shortDue = (iso: string | undefined, now: Date): string => {
 
 /** Today's and tomorrow's plan, each item tagged so the model knows what it may move:
  *  FIXED (school, meals, sleep, events), KEPT (pinned by the student), movable (placed by the planner). */
-export function planLines(state: State, now: Date, days = 2): string {
+export function planLines(state: State, now: Date, days = 4): string {
   const out: string[] = [];
   for (let i = 0; i < days; i++) {
     const day = addDays(startOfDay(now), i);
     const date = fmtDate(day);
     const items: [string, string][] = [];
     for (const f of fixedSpans(state.rules, day, state.events)) {
-      if (f.e <= now || f.kind === "blackout" || f.kind === "buffer") continue;
+      if (f.e <= now || f.kind === "buffer") continue;
       const a = fmtLocal(f.s).slice(11), z = fmtLocal(f.e).slice(11);
       items.push([a, `${a}-${z} ${f.title.replace(/ \(hard cutoff\)/, "")} FIXED`]);
     }
@@ -465,11 +465,15 @@ export class LLMClient {
     if (!this.ready) return { calls: rules, modelCalls: [], reply: "", via: "rules" };
     try {
       const fixed = plannerSystem(state);
+      const bucketSummary = state.buckets.filter((b) => b.key !== SCHOOL).map((b) => `${b.key} ${Math.round(b.logged_minutes / 60 * 10) / 10}/${b.target_hours}h`).join(", ");
+      const rulesSummary = `${state.rules.block_min}m blocks, ${state.rules.break_min}m breaks, dinner ${state.rules.dinner_start} (${state.rules.dinner_min}m), sleep ${state.rules.sleep_cutoff}`;
       const context = `\n\nBackground (only to look up names, dates and what may move; act ONLY on the student's message):\n` +
         `Now: ${now.toLocaleDateString("en-US", { weekday: "short" })} ${fmtDate(now)} ${now.toTimeString().slice(0, 5)}\n` +
         `Dates: ${weekLine(now)}\n` +
-        `Plan:\n${planLines(state, now)}\n` +
-        `Open tasks:\n${relevantTasks(state, text, now) || "(none)"}` +
+        `Rules: ${rulesSummary}\n` +
+        (bucketSummary ? `Buckets: ${bucketSummary}\n` : "") +
+        `Plan:\n${planLines(state, now, 4)}\n` +
+        `Open tasks:\n${relevantTasks(state, text, now, 12) || "(none)"}` +
         ((state.grades ?? []).length ? `\nGrades (weakest first): ${gradeLine(state, now)}` : "") +
         ((state.flags ?? []).some((f) => f.status !== "dismissed") ? `\nZeros/missing: ${(state.flags ?? []).filter((f) => f.status !== "dismissed").slice(0, 4).map((f) => `${f.course}: ${f.title} (${f.kind === "zero" ? `0/${f.points}` : "missing"}${f.status === "planned" ? ", make-up planned" : ""})`).join("; ")}` : "");
       const j = (await this.json(fixed + context, text, 400, fixed, PLANNER_SCHEMA)) as { calls?: unknown; reply?: unknown } | null;

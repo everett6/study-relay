@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -240,6 +241,9 @@ func (s *Server) localLLMChatHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(in.ResponseFormat) > 0 {
 		payload["response_format"] = in.ResponseFormat
+		if strings.Contains(baseURL, "openrouter.ai") && maxTok < 1200 {
+			payload["max_tokens"] = 1200
+		}
 	}
 	if apiKey == "" {
 		payload["options"] = map[string]any{"num_ctx": effCtx}
@@ -247,6 +251,8 @@ func (s *Server) localLLMChatHTTP(w http.ResponseWriter, r *http.Request) {
 		if in.EnableThinking == nil || !*in.EnableThinking {
 			payload["reasoning_effort"] = "none"
 		}
+	} else if strings.Contains(baseURL, "openrouter.ai") && (in.EnableThinking == nil || !*in.EnableThinking) {
+		payload["reasoning"] = map[string]any{"exclude": true}
 	}
 	raw, _ := json.Marshal(payload)
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
@@ -290,6 +296,7 @@ func (s *Server) localLLMChatHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if resp.StatusCode >= 400 {
+		log.Printf("llm: chat upstream %d (%s): %s", resp.StatusCode, model, string(body))
 		httpError(w, http.StatusBadGateway, fmt.Sprintf("LLM error (%d): %s", resp.StatusCode, string(body)))
 		return
 	}

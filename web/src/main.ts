@@ -541,7 +541,13 @@ function Tasks(s: State) {
       ...groups.filter(([, list]) => list.length).map(([label, list]) => h("div", { class: "tgroup" },
         h("h4", { class: label === "Overdue" ? "late" : "" }, label, h("span", null, String(list.length))),
         h("ul", null, list.map((t) => TaskRow(t)))))) :
-      h("section", { class: "card empty", style: "--i:1" }, h("h2", null, "All clear"), h("p", { class: "muted" }, "Sync Canvas to pull in assignments, or add one.")),
+      h("section", { class: "card empty empty-state", style: "--i:1" },
+        h("span", { class: "empty-icon", "aria-hidden": "true" }, svg(ICON.check)),
+        h("h2", null, "You're all caught up"),
+        h("p", { class: "muted" }, "Add an assignment or sync Canvas when something new comes in."),
+        h("div", { class: "row center wrap" },
+          h("button", { class: "btn primary", onclick: openAddTask }, svg(ICON.plus), "Add a task"),
+          h("button", { class: "btn ghost", onclick: (e: Event) => void doCanvasSync(e.currentTarget as HTMLButtonElement) }, svg(ICON.sync), "Sync Canvas"))),
     GradesCard(s),
     estimationInsights(s),
     done.length ? h("details", { class: "card done-list", style: "--i:3" }, h("summary", null, `Recently done (${done.length})`),
@@ -760,8 +766,13 @@ function Inbox(s: State) {
       .map(([k, l]) => h("button", { class: inboxTab === k ? "on" : "", role: "tab", onclick: () => { inboxTab = k; lastView = null; render(); } }, l))),
     inboxTab === "drafts"
       ? (drafts.length ? h("div", { class: "stack" }, drafts.map((d, i) => DraftCard(d, i))) : h("section", { class: "card empty" }, h("p", { class: "muted" }, "No drafts. Ask me: “email my counselor about a 1:1 this week”.")))
-      : (items.length ? h("div", { class: "stack" }, items.map((it, i) => InboxCard(it, i))) : h("section", { class: "card empty" }, h("h2", null, "Inbox zero"),
-        h("p", { class: "muted" }, "Club Discord messages, counselor emails and screenshots you add show up here."))),
+      : (items.length ? h("div", { class: "stack" }, items.map((it, i) => InboxCard(it, i))) : h("section", { class: "card empty empty-state" },
+        h("span", { class: "empty-icon", "aria-hidden": "true" }, svg(ICON.inbox)),
+        h("h2", null, "Your inbox is clear"),
+        h("p", { class: "muted" }, "Messages, assignment reminders, and screenshots will collect here when they arrive."),
+        h("div", { class: "row center wrap" },
+          h("button", { class: "btn primary", onclick: () => void openConnections() }, "Connect services"),
+          h("button", { class: "btn ghost", onclick: () => openCompose() }, svg(ICON.mail), "New email")))),
   ];
 }
 
@@ -1307,6 +1318,7 @@ function openLoginSheet() {
 
 function openSettings() {
   const s = store.state;
+  const clockLabel = (time: string) => hm12(`${fmtDate(now())}T${time}`);
   const ics = h("input", { value: localStorage.getItem("ics_url") ?? "", placeholder: "https://esuhsd.instructure.com/feeds/calendars/user_….ics" });
   const motion = h("input", { type: "checkbox", checked: localStorage.getItem("motion") !== "off" });
   const targets = s.buckets.filter((b) => b.key !== SCHOOL).map((b) => {
@@ -1336,7 +1348,7 @@ function openSettings() {
   const close = sheet("Settings", h("div", { class: "stack" },
     h("h3", null, "Weekly goals"), ...targets.map((t) => t.row),
     h("h3", null, "Your day & preferences"),
-    h("p", { class: "muted small" }, `School ${hm12(r.school_start)}–${hm12(r.school_end)} on weekdays · ${r.after_school_min}-min break after school · dinner ${hm12(r.dinner_start)} (${r.dinner_min} min) · lights out ${hm12(r.sleep_cutoff)} (never moved)`),
+    h("p", { class: "muted small" }, `School ${clockLabel(r.school_start)}–${clockLabel(r.school_end)} on weekdays · ${r.after_school_min}-min break after school · dinner ${clockLabel(r.dinner_start)} (${r.dinner_min} min) · lights out ${clockLabel(r.sleep_cutoff)} (never moved)`),
     h("label", null, "Commute after school (minutes)", commute),
     h("div", null, h("span", { class: "small muted" }, "Days kept completely free of study"), restRow),
     h("div", { class: "row" },
@@ -1385,7 +1397,7 @@ function openSettings() {
         engine.replanInto(st);
       });
       close(); toast("Saved.", "ok"); void store.pull();
-    } }, "Save"))));
+    } }, "Save"))), { wide: true, className: "settings-sheet" });
 }
 
 async function openConnections() {
@@ -1561,6 +1573,7 @@ async function openConnections() {
       render();
       close();
       await testConnections();
+      void useRelayAI();
     } catch (err) {
       toast(`Could not save: ${(err as Error).message}`, "warn");
       btn.disabled = false; btn.textContent = "Save & Test";
@@ -1673,6 +1686,15 @@ async function openSetupWizard() {
             localStorage.setItem("setup_done", "1");
             close();
             await loadIntegrations();
+  if (llm.status.state === "off") {
+    const saved = localStorage.getItem("llm_model");
+    if (!saved || saved === "native") {
+      const tok = localStorage.getItem("relay_token") ?? "";
+      void LLMClient.nativeStatus(tok).then((st) => {
+        if (st.ok) void llm.load("native", { token: tok });
+      });
+    }
+  }
             if (integrations.canvas_server_token) void doCanvasSync();
           } }, "Finish")));
     }
@@ -1702,6 +1724,15 @@ document.addEventListener("keydown", (e) => {
   engine.cfc = CfCScheduler.fromJSON(store.state.cfc);
   engine.afterSync(true); // fresh plan on every open (time has moved on)
   await loadIntegrations();
+  if (llm.status.state === "off") {
+    const saved = localStorage.getItem("llm_model");
+    if (!saved || saved === "native") {
+      const tok = localStorage.getItem("relay_token") ?? "";
+      void LLMClient.nativeStatus(tok).then((st) => {
+        if (st.ok) void llm.load("native", { token: tok });
+      });
+    }
+  }
   if (!/\b401\b|bad relay token/.test(store.lastError) && (location.pathname === "/setup" || (!integrations.canvas_server_token && !store.state.tasks.length && !localStorage.getItem("setup_done")))) {
     void openSetupWizard();
   }
