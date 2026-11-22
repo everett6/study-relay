@@ -7,6 +7,7 @@ import { DEFAULT_TARGET, subjectFocus, type FocusLevel } from "./core/grades";
 import { Store, api, httpTransport } from "./core/store";
 import { fetchGrades, mergeTasks, proxyFetcher, syncCanvas, syncICS } from "./core/canvas";
 import { LLMClient, MODELS, checkWebGPU, type LLMStatus } from "./ai/llmClient";
+import { rankOpenRouterFreeModels, type OpenRouterFreeModel } from "./ai/openRouterModels";
 import { TASK_TYPE } from "./ai/heuristics";
 import { CfCScheduler } from "./ai/cfcScheduler";
 import { MODE_COPY, recentRecord } from "./ai/momentum";
@@ -30,7 +31,7 @@ if (!["today", "week", "tasks", "inbox"].includes(view)) view = "today";
 let lastView: View | null = null;
 let integrations: Record<string, unknown> = {};
 
-const COLORS: Record<string, string> = { AIME: "violet", USAAIO: "blue", RESEARCH: "green", ACT: "orange", PHYSICS: "pink", [SCHOOL]: "teal" };
+const COLORS: Record<string, string> = { AIME: "violet", USAAIO: "blue", RESEARCH: "green", ACT: "orange", PHYSICS: "pink", SELF: "teal", [SCHOOL]: "teal" };
 const color = (b: Pick<Block, "bucket">) => COLORS[b.bucket] ?? "teal";
 const mins = (b: Block) => Math.round((parseLocal(b.end).getTime() - parseLocal(b.start).getTime()) / 60000);
 const now = () => engine.clock();
@@ -142,7 +143,7 @@ function renderModelChip() {
     h("span", { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};margin-right:4px` }),
     svg(ICON.spark),
     h("span", { class: "model-name" }, st === "off" && !requestedModel ? "Smart AI off" : name),
-    h("small", { class: "model-status" }, stateText));
+    ...(st === "off" && !requestedModel ? [] : [h("small", { class: "model-status" }, stateText)]));
 }
 
 // ------------------------------------------------------------------ Today
@@ -297,12 +298,12 @@ function Today(s: State) {
         return h("div", { class: `goal ${COLORS[b.key] ?? "teal"}` },
           h("span", null, bucketShort(b.key)),
           h("div", { class: "bar", role: "img", "aria-label": `${Math.round(f * 100)}% of goal` }, h("i", { style: `width:${Math.round(f * 100)}%` })),
-          h("small", null, `${(b.logged_minutes / 60).toFixed(1)}/${b.target_hours}h`));
+          h("small", null, `${(b.logged_minutes / 60).toFixed(1).replace(/\.0$/, "")}/${b.target_hours}h`));
       }))) : null,
   ];
 }
 
-const BUCKET_SHORT: Record<string, string> = { RESEARCH: "Research", PHYSICS: "Physics", [SCHOOL]: "School" };
+const BUCKET_SHORT: Record<string, string> = { RESEARCH: "Research", PHYSICS: "Physics", SELF: "Self-Improve", [SCHOOL]: "School" };
 const bucketShort = (k: string) => BUCKET_SHORT[k] ?? k;
 const fmtMins = (m: number) => (m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}`);
 /** Short label for small spaces: the bucket name, or the course without "/AP…" plus the assignment. */
@@ -328,7 +329,9 @@ function relTime(d: Date, t: Date) {
   if (m < 60) return `in ${m} min`;
   if (fmtDate(d) === fmtDate(t)) return `at ${hm12(fmtLocal(d))}`;
   if (fmtDate(d) === fmtDate(addDays(t, 1))) return `tomorrow ${hm12(fmtLocal(d))}`;
-  return d.toLocaleDateString("en-US", { weekday: "short" }) + " " + hm12(fmtLocal(d));
+  const days = Math.round((startOfDay(d).getTime() - startOfDay(t).getTime()) / 86400000);
+  if (days > 1 && days < 7) return `${d.toLocaleDateString("en-US", { weekday: "long" })} ${hm12(fmtLocal(d))}`;
+  return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} · ${hm12(fmtLocal(d))}`;
 }
 
 function BlockRow(b: Block, isNext = false) {
@@ -562,7 +565,7 @@ function Tasks(s: State) {
     AttentionCard(s),
     open.length ? h("section", { class: "card tasklist", style: "--i:1" },
       ...groups.filter(([, list]) => list.length).map(([label, list]) => h("div", { class: "tgroup" },
-        h("h4", { class: label === "Overdue" ? "late" : "" }, label, h("span", null, String(list.length))),
+        h("h4", { class: label === "Overdue" ? "late" : "" }, label, h("span", null, String(list.length)), " "),
         h("ul", null, list.map((t) => TaskRow(t)))))) :
       h("section", { class: "card empty empty-state", style: "--i:1" },
         h("span", { class: "empty-icon", "aria-hidden": "true" }, svg(ICON.check)),
@@ -1025,21 +1028,44 @@ async function ask(textIn?: string, speak = false): Promise<Reply[]> {
     const ms = Math.round(performance.now() - t0);
     const aiErr = replies.find((r) => r.text.startsWith("AI error"));
     if (llm.ready) { aiConn = aiErr ? { ok: false, ms, error: aiErr.text.slice(10), at: Date.now() } : { ok: true, ms, at: Date.now() }; renderModelChip(); }
-    for (const r of replies) toast(r.text, r.tone ?? "info");
+    const answer = engine.lastReply || replies.map((r) => r.text).join("\n");
+    for (const r of replies) if (!(r.text === engine.lastReply && engine.lastReply.length > 220)) toast(r.text, r.tone ?? "info");
     if (thinkBox) {
-      const th = engine.lastThinking.trim();
+      const usedRules = engine.lastVia === "rules";
       const who = !llm.ready ? "Built-in rules (no AI loaded — tap Smart AI to connect)"
         : aiErr ? `${llm.status.modelLabel ?? "AI"} — not connecting`
-          : `${llm.status.modelLabel ?? "AI"} · ${(ms / 1000).toFixed(1)}s${engine.lastVia === "rules" ? " (fell back to rules)" : ""}`;
+          : usedRules ? `${llm.status.modelLabel ?? "AI"} · ${(ms / 1000).toFixed(1)}s · answered without a tool call`
+            : `${llm.status.modelLabel ?? "AI"} · ${(ms / 1000).toFixed(1)}s`;
+      const toolChips = engine.lastTrace
+        .filter((line) => line.startsWith("Action: "))
+        .map((line) => h("span", { class: "pill" }, line.slice(8)));
       thinkBox.hidden = false;
+      const th = engine.lastThinking.trim();
       thinkBox.replaceChildren(
-        h("div", { style: "padding:4px 10px;font-size:12px" },
-          h("div", { class: "muted small" }, `Answered by ${who} · ${Math.floor(llm.chatHistory.length / 2)} turns in context`),
-          th ? h("details", { open: true },
-            h("summary", { style: "cursor:pointer;color:var(--muted)" }, "Model reasoning"),
+        h("div", { class: "activity-trace-panel" },
+          h("div", { class: "muted small" }, `Answered by ${who} · up to ${Math.min(3, Math.floor(llm.chatHistory.length / 2))} recent turns sent to the model`),
+          toolChips.length ? h("div", { class: "chips", style: "margin-top:6px" }, ...toolChips) : null,
+          answer ? h("section", { class: "assistant-answer", "aria-live": "polite" },
+            h("div", { class: "assistant-answer-title" }, "Answer"),
+            h("div", { class: "assistant-answer-text" }, answer)) : null,
+          th ? h("details", { open: true, class: "model-reasoning" },
+            h("summary", null, "Model reasoning"),
             h("pre", { style: "white-space:pre-wrap;max-height:180px;overflow:auto;margin:6px 0 0;font-family:inherit;color:var(--muted)" }, th)) : null,
-          h("div", { class: "row", style: "gap:6px;margin-top:4px" },
-            h("button", { type: "button", class: "btn ghost sm", onclick: () => { llm.clearHistory(); thinkBox.hidden = true; toast("Chat context cleared.", "ok"); } }, "Clear context"),
+          h("details", { open: true, class: "activity-trace" },
+            h("summary", null, "Activity trace"),
+            h("ol", null, engine.lastTrace.map((item) => h("li", null, item)))),
+          h("div", { class: "row wrap", style: "gap:6px;margin-top:6px" },
+            engine.canUndoAI ? h("button", { type: "button", class: "btn ghost sm", onclick: () => {
+              const label = engine.undoLastAI();
+              thinkBox.hidden = true;
+              toast(label ? `Undid: ${label}.` : "Nothing to undo.", label ? "ok" : "warn");
+            } }, "Undo this change") : null,
+            llm.ready && usedRules ? h("button", { type: "button", class: "btn primary sm", onclick: () => { thinkBox.hidden = true; void ask(text); } }, svg(ICON.spark), "Retry with AI") : null,
+            h("button", { type: "button", class: "btn ghost sm", onclick: async () => {
+              const synced = await engine.clearChatMemory();
+              thinkBox.hidden = true;
+              toast(synced ? "Persistent AI memory cleared from the relay." : "AI memory cleared locally; it will sync when the relay is available.", synced ? "ok" : "warn");
+            } }, "Clear context"),
             h("button", { type: "button", class: "btn ghost sm", onclick: () => { thinkBox.hidden = true; } }, "Hide"))),
       );
     }
@@ -1148,43 +1174,67 @@ function goSecure(): boolean {
 }
 
 /** Use the relay's model (Settings → Connections) when this browser can't run one. */
-async function useRelayAI(): Promise<boolean> {
+async function useRelayAI(notifyFailure = true): Promise<boolean> {
   const token = localStorage.getItem("relay_token") ?? "";
-  if (!(await LLMClient.nativeStatus(token)).ok) return false;
   const ok = await llm.load("native", { token });
   if (ok) { toast(`Smart AI is running through your relay (${llm.status.text}).`, "ok"); void pingAI(); void engine.estimateMissing(); }
+  else if (notifyFailure) toast(llm.status.text, "warn");
   return ok;
 }
 
 function openModelSheet() {
   const token = localStorage.getItem("relay_token") ?? "";
   let selected = localStorage.getItem("llm_model") || MODELS[0].id;
+  if (!MODELS.some((m) => m.id === selected)) selected = MODELS[0].id;
   const think = h("input", { type: "checkbox", checked: localStorage.getItem("llm_thinking") !== "0" });
   const thinkRow = h("label", { class: "toggle" }, think, h("span", null, "Think before answering (more accurate, slower)"));
 
   const banner = h("div", { class: "ai-banner" });
   const relayMeta = h("span", { class: "muted small" }, "Checking relay AI…");
   const prog = h("div", { class: "progress" }, h("i", { style: `--w:${Math.round(llmStatus.progress * 100)}%` }));
+  prog.hidden = llmStatus.state !== "loading";
   const txt = h("p", { class: "muted small", role: "status" }, llmStatus.text);
   const startBtn = h("button", { class: "btn primary" }, svg(ICON.spark), "Use selected model");
   const gpuNote = h("div", { class: "gpu-note", hidden: true });
 
   const cards = new Map<string, HTMLButtonElement>();
+  const cardNames = new Map<string, HTMLElement>();
+  const cardBadges = new Map<string, HTMLElement>();
+  let selectionGeneration = 0;
+  let closeSheet = () => {};
   const unloadBtn = h("button", {
     type: "button",
     class: "btn ghost sm",
-    onclick: () => { llm.unload(); syncSelection(); render(); toast("Model unloaded from memory.", "ok"); },
+    onclick: () => { aiConn = null; llm.unload(); syncSelection(); render(); toast("Model unloaded from memory.", "ok"); },
   }, "Unload");
   const syncSelection = () => {
     const m = MODELS.find((x) => x.id === selected) ?? MODELS[0];
     thinkRow.hidden = !m.thinks;
-    for (const [id, el] of cards) el.classList.toggle("selected", id === selected);
+    for (const [id, el] of cards) {
+      const active = llmStatus.state === "ready" && llmStatus.model === id;
+      const isSelected = id === selected;
+      el.classList.toggle("selected", isSelected);
+      el.classList.toggle("active", active);
+      el.setAttribute("aria-pressed", String(isSelected));
+      const badge = cardBadges.get(id)!;
+      badge.className = `pill${active ? " warm" : ""}`;
+      badge.textContent = active ? "Active" : isSelected && llmStatus.state === "loading" && llmStatus.model === id
+        ? "Switching…" : isSelected ? "Selected" : MODELS.find((x) => x.id === id)?.size ?? "";
+      cardNames.get(id)!.textContent = id === "native" && relayModelName
+        ? relayModelName : MODELS.find((x) => x.id === id)?.label ?? id;
+    }
     const isRunningThis = llmStatus.state === "ready" && llmStatus.model === selected;
-    startBtn.textContent = isRunningThis ? "Reload / Reconnect" : m.backend === "native" ? "Connect Relay AI" : "Download & start";
+    startBtn.textContent = isRunningThis ? "Reload selected model" : m.backend === "native" ? "Connect Relay AI" : "Load selected model";
+    startBtn.disabled = llmStatus.state === "loading" && llmStatus.model === selected;
+    prog.hidden = llmStatus.state !== "loading";
+    (prog.firstElementChild as HTMLElement).style.setProperty("--w", `${Math.round(llmStatus.progress * 100)}%`);
+    txt.textContent = llmStatus.text;
+    const activeName = modelDisplayName(llmStatus.model, llmStatus.modelLabel);
     const activeTxt = llmStatus.state === "ready"
-      ? `Active: ${llmStatus.provider ?? "AI"} · ${llmStatus.modelLabel ?? llmStatus.model}`
-      : llmStatus.state === "loading" ? llmStatus.text
-        : "Active: Built-in rules (no LLM loaded)";
+      ? `Active: ${llmStatus.provider ?? "AI"} · ${activeName}`
+      : llmStatus.state === "loading" ? `Switching to ${activeName} · ${llmStatus.text}`
+        : llmStatus.state === "error" ? `Couldn't load ${activeName} · ${llmStatus.text}`
+          : "No model active · built-in rules are available";
     unloadBtn.hidden = llmStatus.state !== "ready";
     banner.replaceChildren(
       h("div", { class: "ai-banner-left" },
@@ -1194,8 +1244,53 @@ function openModelSheet() {
     );
   };
 
+  const activateModel = async (id: string, force = false) => {
+    const m = MODELS.find((x) => x.id === id);
+    if (!m) return;
+    selected = id;
+    localStorage.setItem("llm_model", id);
+    localStorage.setItem("llm_thinking", think.checked ? "1" : "0");
+    syncSelection();
+    if (!force && llmStatus.state === "ready" && llmStatus.model === id) return;
+    if (llmStatus.state === "loading" && llmStatus.model === id) return;
+    const request = ++selectionGeneration;
+    aiConn = null;
+    startBtn.disabled = think.disabled = true;
+    try {
+      let ok = await llm.load(id, { thinking: !!m.thinks && think.checked, token });
+      if (request !== selectionGeneration) return;
+      if (ok) {
+        toast(`Switched to ${llm.status.modelLabel ?? m.label} (context preserved).`, "ok");
+        void pingAI();
+        void engine.estimateMissing();
+      } else {
+        const error = llm.status.text;
+        const canFallback = m.backend !== "native" &&
+          (llm.status.state !== "unsupported" || llm.status.reason !== "insecure");
+        if (canFallback) {
+          selected = "native";
+          localStorage.setItem("llm_model", "native");
+          syncSelection();
+          ok = await useRelayAI(false);
+          if (request !== selectionGeneration) return;
+          if (ok) selected = "native";
+          else toast(llm.status.text || error, "warn");
+        } else if (llm.status.reason === "insecure" && goSecure()) {
+          return;
+        } else toast(error, "warn");
+      }
+      if (request !== selectionGeneration) return;
+      syncSelection();
+      render();
+    } finally {
+      if (request === selectionGeneration) {
+        startBtn.disabled = think.disabled = false;
+        syncSelection();
+      }
+    }
+  };
+
   let showAllBrowser = false;
-  const closeRef: { fn: () => void } = { fn: () => {} };
   const makeCard = (m: typeof MODELS[number]) => {
     const isActive = llmStatus.state === "ready" && llmStatus.model === m.id;
     const sub = m.backend === "native"
@@ -1204,30 +1299,16 @@ function openModelSheet() {
     const btn = h("button", {
       type: "button",
       class: `model-card ${m.backend === "native" ? "hero" : ""} ${m.id === selected ? "selected" : ""} ${isActive ? "active" : ""}`,
-      onclick: async () => {
-        selected = m.id;
-        syncSelection();
-        if (llmStatus.state === "ready" && llmStatus.model === m.id) return;
-        startBtn.disabled = think.disabled = true;
-        localStorage.setItem("llm_model", m.id);
-        const ok = await llm.load(m.id, { thinking: !!m.thinks && think.checked, token });
-        startBtn.disabled = think.disabled = false;
-        syncSelection();
-        render();
-        if (ok) {
-          toast(`Switched to ${llm.status.modelLabel ?? m.label} (context preserved).`, "ok");
-          void pingAI();
-          void engine.estimateMissing();
-        } else {
-          toast(llm.status.text, "warn");
-        }
-      },
+      "aria-pressed": String(m.id === selected),
+      onclick: () => void activateModel(m.id),
     },
       h("div", { class: "row", style: "justify-content:space-between;align-items:center;width:100%;gap:8px" },
-        h("strong", null, m.label),
-        isActive ? h("span", { class: "pill warm" }, "Running") : h("span", { class: "pill" }, m.backend === "native" ? "0 MB" : m.size)),
+        h("strong", { class: "model-card-name" }, m.backend === "native" && relayModelName ? relayModelName : m.label),
+        h("span", { class: `pill${isActive ? " warm" : ""}` }, isActive ? "Active" : m.backend === "native" ? "No download" : m.size)),
       sub);
     cards.set(m.id, btn);
+    cardNames.set(m.id, btn.querySelector(".model-card-name") as HTMLElement);
+    cardBadges.set(m.id, btn.querySelector(".pill") as HTMLElement);
     return btn;
   };
   const extraGroups = (["Small & fast", "Bigger & smarter"] as const).map((g) => h("div", { class: "model-group", hidden: true },
@@ -1258,17 +1339,22 @@ function openModelSheet() {
 
   void LLMClient.nativeStatus(token).then((st) => {
     if (!st.ok) {
+      relayModelName = "";
       relayMeta.textContent = st.error
         ? `Not ready: ${st.error}`
         : "Not connected — click Configure below for OpenRouter / OpenAI / Ollama";
+      renderModelChip();
+      syncSelection();
       return;
     }
     const prov = st.url?.includes("openrouter.ai") ? "OpenRouter"
       : st.url?.includes("openai.com") ? "OpenAI"
         : st.url?.includes("azure.com") ? "Azure" : "Ollama";
+    relayModelName = st.model ?? "lfm2.5";
     const ctxK = Math.round((st.context_window ?? 32768) / 1024);
-    relayMeta.textContent = `${prov}: ${st.model ?? "lfm2.5"} · ${ctxK}K ctx`;
-    if (llmStatus.state === "ready" && llmStatus.model === "native") syncSelection();
+    relayMeta.textContent = `${prov} · ${relayModelName} · ${ctxK}K ctx`;
+    renderModelChip();
+    syncSelection();
   });
 
   if (llmStatus.state !== "ready" && llmStatus.state !== "loading") {
@@ -1280,52 +1366,34 @@ function openModelSheet() {
       gpuNote.replaceChildren(h("p", null, g.text, relayOk ? " Your relay has a model, so Smart AI can run through it instead." : ""), h("div", { class: "row" },
         g.reason === "insecure" && pub.startsWith("https://") ? h("button", { class: "btn primary sm", onclick: () => goSecure() }, "Open the secure link") : null,
         g.reason === "no-adapter" ? h("button", { class: "btn sm", onclick: () => location.reload() }, "Reload page") : null,
-        relayOk ? h("button", { class: "btn ghost sm", onclick: async () => { if (await useRelayAI()) { syncSelection(); render(); } } }, "Use Relay AI instead") : null));
+        relayOk ? h("button", { class: "btn ghost sm", onclick: () => void activateModel("native") }, "Use Relay AI instead") : null));
     });
   }
 
-  startBtn.onclick = async () => {
-    startBtn.disabled = think.disabled = true;
-    localStorage.setItem("llm_model", selected);
-    localStorage.setItem("llm_thinking", think.checked ? "1" : "0");
-    const m = MODELS.find((x) => x.id === selected)!;
-    if (await llm.load(selected, { thinking: !!m.thinks && think.checked, token })) {
-      toast(`Smart AI ready: ${llm.status.modelLabel ?? m.label}`, "ok");
-      syncSelection();
-      render();
-      void engine.estimateMissing();
-    } else if (llm.status.state === "unsupported") {
-      if (llm.status.reason === "insecure" && goSecure()) return;
-      if (!(await useRelayAI())) toast(llm.status.text, "warn");
-    } else {
-      const errText = llm.status.text;
-      if (m.backend !== "native" && (await useRelayAI())) {
-        syncSelection();
-        render();
-      } else {
-        toast(errText, "warn");
-      }
-    }
-    startBtn.disabled = think.disabled = false;
-  };
-
+  startBtn.onclick = () => void activateModel(selected, true);
+  modelSheetRefresh = syncSelection;
   syncSelection();
   const unsub = setInterval(() => {
     (prog.firstElementChild as HTMLElement).style.setProperty("--w", `${Math.round(llmStatus.progress * 100)}%`);
     txt.textContent = llmStatus.text;
   }, 300);
 
-  closeRef.fn = sheet("AI & Model Selection", h("div", { class: "stack" },
+  closeSheet = sheet("AI & Model Selection", h("div", { class: "stack" },
     banner,
     gpuNote,
     listWrap,
+    h("p", { class: "muted small" }, "Pick a model to switch immediately. Your model choice and conversation history are kept across switches."),
     thinkRow,
     txt,
-    llmStatus.state === "loading" ? prog : null,
+    prog,
     h("div", { class: "row end" },
-      h("button", { type: "button", class: "btn ghost", onclick: () => { closeRef.fn(); void openConnections(); } }, "Configure Relay AI…"),
+      h("button", { type: "button", class: "btn ghost", onclick: () => { closeSheet(); void openConnections(); } }, "Configure Relay AI…"),
       startBtn),
-  ), { onClose: () => clearInterval(unsub) });
+  ), { onClose: () => {
+    selectionGeneration++;
+    if (modelSheetRefresh === syncSelection) modelSheetRefresh = null;
+    clearInterval(unsub);
+  } });
 }
 
 function openLoginSheet() {
@@ -1497,24 +1565,147 @@ async function openConnections() {
     : savedLLMUrl.includes("azure.com") ? "azure"
       : savedLLMUrl.includes("api.openai.com") ? "openai" : "local";
   let currentProvider = initialProvider;
+  const defaultModels: Record<string, string> = {
+    openrouter: "google/gemma-4-31b-it:free",
+    openai: "gpt-6-luna",
+    azure: "gpt-6-luna",
+    local: "lfm2.5",
+  };
   const llmUrl = h("input", { value: savedLLMUrl });
-  const llmModel = h("input", { value: String(cfg.local_llm_model ?? "lfm2.5") });
+  const llmModel = h("input", { value: String(cfg.local_llm_model ?? "").trim() || defaultModels[initialProvider] });
   const llmKey = h("input", { type: "password", placeholder: "", autocomplete: "new-password" });
   const llmCtx = h("input", { type: "number", min: "2048", max: "131072", step: "1024", value: String(cfg.local_llm_ctx ?? 32768) });
   const providerKeys: Record<string, { configured: boolean; placeholder: string; url: string; model: string }> = {
     openrouter: { configured: Boolean(cfg.openrouter_key_configured),
-      placeholder: "OpenRouter API key (sk-or-…)", url: "https://openrouter.ai/api/v1", model: "google/gemma-4-31b-it:free" },
+      placeholder: "OpenRouter API key (sk-or-…)", url: "https://openrouter.ai/api/v1", model: defaultModels.openrouter },
     openai: { configured: Boolean(cfg.openai_key_configured),
-      placeholder: "OpenAI API key", url: "https://api.openai.com/v1", model: "gpt-6-luna" },
+      placeholder: "OpenAI API key", url: "https://api.openai.com/v1", model: defaultModels.openai },
     azure: { configured: Boolean(cfg.azure_key_configured),
-      placeholder: "Azure OpenAI API key", url: "https://YOUR-RESOURCE.openai.azure.com/openai/v1", model: "gpt-6-luna" },
+      placeholder: "Azure OpenAI API key", url: "https://YOUR-RESOURCE.openai.azure.com/openai/v1", model: defaultModels.azure },
     local: { configured: Boolean(cfg.local_key_configured)
       || (initialProvider === "local" && Boolean(cfg.local_llm_key_configured)),
-      placeholder: "Optional API key for your local/custom endpoint", url: "http://127.0.0.1:11434/v1", model: "lfm2.5" },
+      placeholder: "Optional API key for your local/custom endpoint", url: "http://127.0.0.1:11434/v1", model: defaultModels.local },
+  };
+  const modelPresets: Record<string, { label: string; model: string; note: string }[]> = {
+    openrouter: [
+      { label: "GPT-6 Luna", model: "openai/gpt-6-luna", note: "Strong reasoning · may be paid" },
+    ],
+    openai: [
+      { label: "GPT-6 Luna", model: "gpt-6-luna", note: "Use the GPT-6 Luna model on your OpenAI endpoint" },
+    ],
+    azure: [],
+    local: [
+      { label: "LFM2.5", model: "lfm2.5", note: "Default Ollama model" },
+    ],
   };
   const keyDrafts: Record<string, string> = {};
   const modelDrafts: Record<string, { url: string; model: string; context: string }> = {
     [initialProvider]: { url: llmUrl.value, model: llmModel.value, context: llmCtx.value },
+  };
+  const modelPresetList = h("div", { class: "model-presets" });
+  const drawModelPresets = () => {
+    const presets = modelPresets[currentProvider] ?? [];
+    modelPresetList.replaceChildren(
+      h("p", { class: "small muted" }, presets.length
+        ? "Quick picks only change the model ID; your saved API key stays untouched."
+        : "Enter your Azure deployment name or a custom model ID."),
+      ...(presets.length ? [h("div", { class: "model-preset-grid" }, ...presets.map((preset) =>
+        h("button", {
+          type: "button",
+          class: `model-preset ${llmModel.value === preset.model ? "on" : ""}`,
+          title: `${preset.model} · ${preset.note}`,
+          "aria-pressed": String(llmModel.value === preset.model),
+          onclick: () => {
+            llmModel.value = preset.model;
+            modelDrafts[currentProvider] = { url: llmUrl.value, model: preset.model, context: llmCtx.value };
+            drawModelPresets();
+          },
+        }, h("strong", null, preset.label), h("code", null, preset.model), h("small", null, preset.note))))] : []),
+    );
+  };
+  let freeCatalogModels: ReturnType<typeof rankOpenRouterFreeModels> = [];
+  let freeCatalogLoaded = false;
+  let freeCatalogLoading = false;
+  let freeCatalogError = "";
+  const freeCatalogSearch = h("input", {
+    type: "search", placeholder: "Search free model names or IDs",
+    oninput: () => drawFreeCatalog(),
+  });
+  const freeCatalogStatus = h("p", { class: "small muted", role: "status" }, "Loading free OpenRouter models…");
+  const freeCatalogRows = h("div", { class: "free-model-list" });
+  const freeCatalogRefresh = h("button", {
+    type: "button", class: "btn ghost sm",
+    onclick: () => void loadFreeCatalog(true),
+  }, "Refresh");
+  const freeModelCatalog = h("section", { class: "openrouter-free-catalog", hidden: currentProvider !== "openrouter" },
+    h("div", { class: "free-catalog-heading" },
+      h("strong", null, "All free OpenRouter models"),
+      freeCatalogRefresh),
+    h("p", { class: "small muted" },
+      "Live zero-price text models. Ranked by planner tool + JSON support first, then reported intelligence benchmark, reasoning support, and context. Free tiers may be rate-limited or change."),
+    freeCatalogSearch, freeCatalogStatus, freeCatalogRows);
+  const drawFreeCatalog = () => {
+    freeModelCatalog.hidden = currentProvider !== "openrouter";
+    freeCatalogRefresh.disabled = freeCatalogLoading;
+    freeCatalogRefresh.textContent = freeCatalogLoading ? "Refreshing…" : "Refresh";
+    const query = freeCatalogSearch.value.trim().toLowerCase();
+    const matches = freeCatalogModels.filter((model) =>
+      `${model.name} ${model.id}`.toLowerCase().includes(query));
+    freeCatalogStatus.textContent = freeCatalogError
+      ? `${freeCatalogError}${freeCatalogModels.length ? " Showing the last loaded catalog." : ""}`
+      : freeCatalogLoading ? `Loading the live catalog${freeCatalogModels.length ? ` · ${freeCatalogModels.length} cached` : ""}…`
+        : freeCatalogLoaded ? `${freeCatalogModels.length} free text models · showing ${matches.length}.`
+          : "Load the live list of free text models.";
+    freeCatalogRows.replaceChildren(...matches.map((model) => {
+      const rank = freeCatalogModels.indexOf(model) + 1;
+      const selected = llmModel.value === model.id;
+      const context = model.context_length ? `${Math.round(model.context_length / 1024)}K context` : "context not reported";
+      const intelligence = model.intelligence_index == null ? "no benchmark" : `intelligence ${model.intelligence_index.toFixed(1)}`;
+      const fit = model.planner_compatible ? "Planner-ready" : "Limited planner support";
+      const capabilities = [
+        model.supports_tools ? "tools" : "no tools",
+        model.supports_json ? "JSON" : "no JSON metadata",
+        model.supports_reasoning ? "reasoning" : "",
+        context,
+        intelligence,
+      ].filter(Boolean).join(" · ");
+      return h("button", {
+        type: "button",
+        class: `free-model-choice${selected ? " on" : ""}`,
+        "aria-pressed": String(selected),
+        title: `${model.id} · ${capabilities}`,
+        onclick: () => {
+          llmModel.value = model.id;
+          modelDrafts[currentProvider] = { url: llmUrl.value, model: model.id, context: llmCtx.value };
+          drawModelPresets();
+          drawFreeCatalog();
+        },
+      },
+        h("span", { class: "free-model-rank" }, `#${rank}`),
+        h("span", { class: "free-model-main" },
+          h("strong", null, model.name || model.id),
+          h("code", null, model.id),
+          h("small", null, capabilities)),
+        h("span", { class: `pill${model.planner_compatible ? " warm" : ""}` }, fit));
+    }));
+    if (freeCatalogLoaded && !matches.length && !freeCatalogError)
+      freeCatalogRows.replaceChildren(h("p", { class: "small muted" }, "No free models match that search."));
+  };
+  const loadFreeCatalog = async (refresh = false) => {
+    if (freeCatalogLoading || (freeCatalogLoaded && !refresh)) return;
+    freeCatalogLoading = true;
+    freeCatalogError = "";
+    drawFreeCatalog();
+    try {
+      const response = await api<{ models: OpenRouterFreeModel[] }>("/api/llm/models");
+      freeCatalogModels = rankOpenRouterFreeModels(response.models);
+      freeCatalogLoaded = true;
+    } catch (error) {
+      freeCatalogError = `Could not load OpenRouter’s free model list: ${String((error as Error).message ?? error)}`;
+    } finally {
+      freeCatalogLoading = false;
+      drawFreeCatalog();
+    }
   };
   const providerIds = ["openrouter", "openai", "azure", "local"] as const;
   const providerLabels: Record<(typeof providerIds)[number], string> = {
@@ -1555,6 +1746,9 @@ async function openConnections() {
     llmCtx.value = draft.context;
     llmKey.value = keyDrafts[currentProvider] ?? "";
     updateProviderKeyHint();
+    drawModelPresets();
+    drawFreeCatalog();
+    if (currentProvider === "openrouter") void loadFreeCatalog();
   };
   const providerNav = h("div", { class: "provider-nav", role: "group", "aria-label": "AI model provider" },
     ...providerIds.map((id) => {
@@ -1567,6 +1761,9 @@ async function openConnections() {
       return button;
     }));
   updateProviderKeyHint();
+  drawModelPresets();
+  drawFreeCatalog();
+  if (currentProvider === "openrouter") void loadFreeCatalog();
 
   const serviceIds = ["email", "discord", "canvas", "ai"] as const;
   const serviceLabels: Record<(typeof serviceIds)[number], string> = {
@@ -1673,11 +1870,14 @@ async function openConnections() {
         providerNav,
         h("div", { class: "connection-fields" },
           h("label", { class: "connection-full" }, "OpenAI-compatible URL", llmUrl),
-          h("label", null, "Model", llmModel),
+          h("label", null, "Model ID", llmModel),
           h("label", { class: "connection-context" }, "Context length", llmCtx),
           h("label", { class: "connection-full" }, "API key", llmKey)),
+        modelPresetList,
+        freeModelCatalog,
         keyStatus,
-        h("div", { class: "provider-note" }, "OpenRouter: use your OpenRouter key and an exact model ID from your OpenRouter account. Local Ollama does not need a key.")))),
+        h("div", { class: "provider-note" }, "OpenRouter: use your OpenRouter key and an exact model ID from your OpenRouter account. Local Ollama does not need a key."),
+        h("div", { class: "provider-note" }, "Persistent AI memory: up to 16 recent messages are stored in the relay-synced planner state. The latest 6 messages are sent to the selected model with each Ask request. Use Clear context in the activity panel to erase it.")))),
     h("div", { class: "connections-actions" },
       h("p", { class: "connections-security-note" }, svg(ICON.check), " Secrets are saved only on your relay server and never sent back to this browser."),
       h("div", { class: "row end" },
@@ -1754,11 +1954,20 @@ async function openSetupWizard() {
             close();
             await loadIntegrations();
   if (llm.status.state === "off") {
+    // Every chat goes to the relay model when one is configured. A saved in-browser model is
+    // only used if the relay is unreachable, so OpenRouter stays the default path.
     const saved = localStorage.getItem("llm_model");
     const tok = localStorage.getItem("relay_token") ?? "";
     void LLMClient.nativeStatus(tok).then(async (st) => {
-      if (st.ok && (!saved || saved === "native" || !(await LLMClient.supported()))) {
-        if (await llm.load("native", { token: tok, thinking: localStorage.getItem("llm_thinking") !== "0" })) void pingAI();
+      if (st.ok) {
+        if (await llm.load("native", { token: tok, thinking: localStorage.getItem("llm_thinking") !== "0" })) {
+          void pingAI();
+          return;
+        }
+      }
+      // Relay unavailable: fall back to a saved in-browser model if it can run here.
+      if (saved && saved !== "native" && await LLMClient.supported()) {
+        await llm.load(saved, { token: tok, thinking: localStorage.getItem("llm_thinking") !== "0" });
       } else if (!st.ok) {
         toast(`Relay AI not reachable${st.error ? `: ${st.error}` : ""}. Using built-in rules.`, "warn");
       }
