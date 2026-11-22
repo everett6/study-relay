@@ -71,6 +71,7 @@ var readOnlyToolNames = map[string]bool{
 	"find_free_slots":           true,
 	"search_tasks":              true,
 	"get_assignment_details":    true,
+	"get_planning_context":      true,
 }
 
 func annotatedTools() []tool {
@@ -547,7 +548,9 @@ func (s *Server) handleRPC(rq rpcRequest) *rpcResponse {
 			},
 			"serverInfo": map[string]any{"name": "study-relay", "version": version},
 			"instructions": "Adaptive study scheduler. Times are local wall-clock (YYYY-MM-DDTHH:MM). " +
-				"Protected: school, 45-min after-school break, between-block breaks, 90-min dinner at 7 PM, 10:30 PM sleep cutoff.",
+				"Protected: school, 45-min after-school break, between-block breaks, 90-min dinner at 7 PM, 10:30 PM sleep cutoff. " +
+				"FAST PATH: Call get_planning_context ONCE to read schedule, open tasks, grades, buckets, rules, free slots, and momentum together instead of chaining multiple get_* tools. " +
+				"Call batch_update_schedule ONCE to apply tasks, blocks, recurring rules, and break/cutoff rules together in a single turn.",
 		}, nil)
 	case "ping":
 		return reply(map[string]any{}, nil)
@@ -1523,51 +1526,56 @@ type rulesArgs struct {
 	PreclearHours  *int    `json:"preclear_hours"`
 }
 
+func applyRulesArgs(r *Rules, a rulesArgs) bool {
+	changed := false
+	if a.AfterSchoolMin != nil {
+		r.AfterSchoolMin = *a.AfterSchoolMin
+		changed = true
+	}
+	if a.BreakMin != nil {
+		r.BreakMin = *a.BreakMin
+		changed = true
+	}
+	if a.BlockMin != nil {
+		r.BlockMin = *a.BlockMin
+		changed = true
+	}
+	if a.DinnerStart != nil {
+		r.DinnerStart = *a.DinnerStart
+		changed = true
+	}
+	if a.DinnerMin != nil {
+		r.DinnerMin = *a.DinnerMin
+		changed = true
+	}
+	if a.SleepCutoff != nil {
+		r.SleepCutoff = *a.SleepCutoff
+		changed = true
+	}
+	if a.SchoolStart != nil {
+		r.SchoolStart = *a.SchoolStart
+		changed = true
+	}
+	if a.SchoolEnd != nil {
+		r.SchoolEnd = *a.SchoolEnd
+		changed = true
+	}
+	if a.PreclearHours != nil {
+		r.PreclearHours = *a.PreclearHours
+		changed = true
+	}
+	return changed
+}
+
 func (s *Server) toolUpdateRules(a rulesArgs) (map[string]any, error) {
 	var out Rules
 	changed := false
 	_, _, err := s.store.Update(func(st *State) error {
-		r := &st.Rules
-		if a.AfterSchoolMin != nil {
-			r.AfterSchoolMin = *a.AfterSchoolMin
+		if applyRulesArgs(&st.Rules, a) {
 			changed = true
-		}
-		if a.BreakMin != nil {
-			r.BreakMin = *a.BreakMin
-			changed = true
-		}
-		if a.BlockMin != nil {
-			r.BlockMin = *a.BlockMin
-			changed = true
-		}
-		if a.DinnerStart != nil {
-			r.DinnerStart = *a.DinnerStart
-			changed = true
-		}
-		if a.DinnerMin != nil {
-			r.DinnerMin = *a.DinnerMin
-			changed = true
-		}
-		if a.SleepCutoff != nil {
-			r.SleepCutoff = *a.SleepCutoff
-			changed = true
-		}
-		if a.SchoolStart != nil {
-			r.SchoolStart = *a.SchoolStart
-			changed = true
-		}
-		if a.SchoolEnd != nil {
-			r.SchoolEnd = *a.SchoolEnd
-			changed = true
-		}
-		if a.PreclearHours != nil {
-			r.PreclearHours = *a.PreclearHours
-			changed = true
-		}
-		if changed {
 			st.Meta.NeedsReplan = true
 		}
-		out = *r
+		out = st.Rules
 		return nil
 	})
 	if err != nil {

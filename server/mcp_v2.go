@@ -26,27 +26,38 @@ var mcpToolsV2 = []tool{
 	},
 	{
 		Name:        "batch_update_schedule",
-		Description: "Apply multiple schedule/task mutations (complete, add, move, cancel, swap) in a single MCP round-trip, replan, and return today's updated blocks.",
+		Description: "One-shot atomic write tool: apply multiple mutations (complete, add, move, cancel, swap, schedule_block, set_recurring, update_rules) in a single MCP round-trip, replan once, and return updated blocks.",
 		InputSchema: obj(map[string]any{
 			"actions": map[string]any{
 				"type": "array",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"op":                map[string]any{"type": "string", "enum": []string{"complete", "add", "move", "cancel", "swap"}},
-						"task_id":           str("for complete"),
-						"match":             str("substring match for complete/move/cancel/swap"),
-						"block_id":          str("for move/cancel/swap"),
-						"title":             str("for add/swap"),
-						"course":            str("for add"),
-						"bucket":            str("for swap"),
-						"category":          str("homework|quiz|test|lab|project"),
-						"due_at":            str("YYYY-MM-DDTHH:MM"),
-						"date":              str("YYYY-MM-DD"),
-						"start":             str("HH:MM"),
-						"end":               str("HH:MM"),
-						"estimated_minutes": num("minutes"),
-						"cognitive_load":    num("1-5"),
+						"op":                      map[string]any{"type": "string", "enum": []string{"complete", "add", "move", "cancel", "swap", "schedule_block", "set_recurring", "update_rules"}},
+						"task_id":                 str("for complete/schedule_block"),
+						"match":                   str("substring match for complete/move/cancel/swap"),
+						"block_id":                str("for move/cancel/swap"),
+						"title":                   str("for add/swap/schedule_block/set_recurring"),
+						"course":                  str("for add"),
+						"bucket":                  str("for swap/schedule_block"),
+						"category":                str("homework|quiz|test|lab|project"),
+						"due_at":                  str("YYYY-MM-DDTHH:MM"),
+						"date":                    str("YYYY-MM-DD"),
+						"start":                   str("HH:MM"),
+						"end":                     str("HH:MM"),
+						"locked":                  map[string]any{"type": "boolean", "description": "for schedule_block (default true)"},
+						"estimated_minutes":       num("minutes"),
+						"cognitive_load":          num("1-5"),
+						"kind":                    map[string]any{"type": "string", "enum": []string{"quiet_home_alone", "family_dinner", "recurring_class", "rest_days"}},
+						"days":                    map[string]any{"type": "array", "items": map[string]any{"type": "number"}, "description": "ISO weekdays 1=Mon .. 7=Sun for set_recurring"},
+						"after_school_break_min":  num("for update_rules"),
+						"between_block_break_min": num("for update_rules"),
+						"default_block_min":       num("for update_rules"),
+						"dinner_start":            str("HH:MM for update_rules"),
+						"dinner_min":              num("for update_rules"),
+						"sleep_cutoff":            str("HH:MM for update_rules"),
+						"school_start":            str("HH:MM for update_rules"),
+						"school_end":              str("HH:MM for update_rules"),
 					},
 				},
 			},
@@ -98,6 +109,14 @@ var mcpToolsV2 = []tool{
 		Name:        "get_daily_briefing",
 		Description: "One-shot daily context loader for Gemini: returns today's blocks, free gaps, timer, buckets, grades summary, top Canvas ROI opportunities, weak competition topics, and unread inbox count.",
 		InputSchema: obj(map[string]any{"date": str("optional YYYY-MM-DD; defaults to today")}),
+	},
+	{
+		Name:        "get_planning_context",
+		Description: "Preferred 1-call full planning snapshot: returns today + multi-day week blocks, open tasks, rules/breaks/cutoff, momentum/energy, buckets, grades, upcoming events, and free slots in a single call.",
+		InputSchema: obj(map[string]any{
+			"date": str("optional start YYYY-MM-DD; defaults to today"),
+			"days": num("number of days for week/slots (1-14, default 7)"),
+		}),
 	},
 	{
 		Name:        "find_free_slots",
@@ -245,6 +264,14 @@ func (s *Server) callToolV2(name string, raw json.RawMessage) (map[string]any, b
 		_ = json.Unmarshal(raw, &a)
 		res, err := s.toolDailyBriefing(a.Date)
 		return res, true, err
+	case "get_planning_context":
+		var a struct {
+			Date string `json:"date"`
+			Days int    `json:"days"`
+		}
+		_ = json.Unmarshal(raw, &a)
+		res, err := s.toolPlanningContext(a.Date, a.Days)
+		return res, true, err
 	case "find_free_slots":
 		var a struct {
 			Date       string `json:"date"`
@@ -294,67 +321,74 @@ func (s *Server) callToolV2(name string, raw json.RawMessage) (map[string]any, b
 	return nil, false, nil
 }
 
+func applyRecurringRule(st *State, now time.Time, newID func() string, kind string, days []int, start, end, title string) error {
+	switch kind {
+	case "quiet_home_alone":
+		if start == "" || end == "" {
+			return fmt.Errorf("start and end (HH:MM) required")
+		}
+		win := start + "-" + end
+		if len(days) == 0 {
+			st.Rules.QuietWeekday = []string{win}
+		} else {
+			if st.Rules.QuietByDay == nil {
+				st.Rules.QuietByDay = map[string][]string{}
+			}
+			for _, d := range days {
+				st.Rules.QuietByDay[fmt.Sprint(d)] = []string{win}
+			}
+		}
+	case "family_dinner":
+		if start != "" {
+			st.Rules.DinnerStart = start
+		}
+		if start != "" && end != "" {
+			if sT, e1 := time.Parse("15:04", start); e1 == nil {
+				if eT, e2 := time.Parse("15:04", end); e2 == nil && eT.After(sT) {
+					st.Rules.DinnerMin = int(eT.Sub(sT).Minutes())
+				}
+			}
+		}
+	case "rest_days":
+		st.Rules.RestDays = days
+	case "recurring_class":
+		if start == "" || end == "" || len(days) == 0 {
+			return fmt.Errorf("days, start, and end required for recurring_class")
+		}
+		if title == "" {
+			title = "Class"
+		}
+		daySet := map[int]bool{}
+		for _, d := range days {
+			daySet[d] = true
+		}
+		for i := 0; i < 28; i++ {
+			d := now.AddDate(0, 0, i)
+			wd := int(d.Weekday())
+			if wd == 0 {
+				wd = 7
+			}
+			if !daySet[wd] {
+				continue
+			}
+			ds := d.Format(dateLayout)
+			st.Events = append(st.Events, Event{
+				ID: "rec-" + newID(), Title: title, Kind: "blackout",
+				Start: ds + "T" + start, End: ds + "T" + end,
+			})
+		}
+	default:
+		return fmt.Errorf("unknown kind %q", kind)
+	}
+	return nil
+}
+
 func (s *Server) toolSetRecurring(kind string, days []int, start, end, title string, replan bool) (map[string]any, error) {
 	now := s.now()
 	var snap map[string]any
 	_, st, err := s.store.Update(func(st *State) error {
-		switch kind {
-		case "quiet_home_alone":
-			if start == "" || end == "" {
-				return fmt.Errorf("start and end (HH:MM) required")
-			}
-			win := start + "-" + end
-			if len(days) == 0 {
-				st.Rules.QuietWeekday = []string{win}
-			} else {
-				if st.Rules.QuietByDay == nil {
-					st.Rules.QuietByDay = map[string][]string{}
-				}
-				for _, d := range days {
-					st.Rules.QuietByDay[fmt.Sprint(d)] = []string{win}
-				}
-			}
-		case "family_dinner":
-			if start != "" {
-				st.Rules.DinnerStart = start
-			}
-			if start != "" && end != "" {
-				if sT, e1 := time.Parse("15:04", start); e1 == nil {
-					if eT, e2 := time.Parse("15:04", end); e2 == nil && eT.After(sT) {
-						st.Rules.DinnerMin = int(eT.Sub(sT).Minutes())
-					}
-				}
-			}
-		case "rest_days":
-			st.Rules.RestDays = days
-		case "recurring_class":
-			if start == "" || end == "" || len(days) == 0 {
-				return fmt.Errorf("days, start, and end required for recurring_class")
-			}
-			if title == "" {
-				title = "Class"
-			}
-			daySet := map[int]bool{}
-			for _, d := range days {
-				daySet[d] = true
-			}
-			for i := 0; i < 28; i++ {
-				d := now.AddDate(0, 0, i)
-				wd := int(d.Weekday())
-				if wd == 0 {
-					wd = 7
-				}
-				if !daySet[wd] {
-					continue
-				}
-				ds := d.Format(dateLayout)
-				st.Events = append(st.Events, Event{
-					ID: "rec-" + s.newID(), Title: title, Kind: "blackout",
-					Start: ds + "T" + start, End: ds + "T" + end,
-				})
-			}
-		default:
-			return fmt.Errorf("unknown kind %q", kind)
+		if err := applyRecurringRule(st, now, s.newID, kind, days, start, end, title); err != nil {
+			return err
 		}
 		if replan {
 			ReplanServer(st, now, s.newID, s.loc)
@@ -375,23 +409,34 @@ func (s *Server) toolBatchUpdate(actions []json.RawMessage, replan bool) (map[st
 	now := s.now()
 	applied := []string{}
 	var snap map[string]any
-	_, _, err := s.store.Update(func(st *State) error {
+	_, st, err := s.store.Update(func(st *State) error {
 		for _, raw := range actions {
 			var op struct {
-				Op      string   `json:"op"`
-				TaskID  string   `json:"task_id"`
-				Match   string   `json:"match"`
-				BlockID string   `json:"block_id"`
-				Title   string   `json:"title"`
-				Course  string   `json:"course"`
-				Bucket  string   `json:"bucket"`
-				Cat     string   `json:"category"`
-				DueAt   string   `json:"due_at"`
-				Date    string   `json:"date"`
-				Start   string   `json:"start"`
-				End     string   `json:"end"`
-				EstMin  *float64 `json:"estimated_minutes"`
-				Load    *float64 `json:"cognitive_load"`
+				Op             string   `json:"op"`
+				TaskID         string   `json:"task_id"`
+				Match          string   `json:"match"`
+				BlockID        string   `json:"block_id"`
+				Title          string   `json:"title"`
+				Course         string   `json:"course"`
+				Bucket         string   `json:"bucket"`
+				Cat            string   `json:"category"`
+				DueAt          string   `json:"due_at"`
+				Date           string   `json:"date"`
+				Start          string   `json:"start"`
+				End            string   `json:"end"`
+				Locked         *bool    `json:"locked"`
+				EstMin         *float64 `json:"estimated_minutes"`
+				Load           *float64 `json:"cognitive_load"`
+				Kind           string   `json:"kind"`
+				Days           []int    `json:"days"`
+				AfterSchoolMin *int     `json:"after_school_break_min"`
+				BreakMin       *int     `json:"between_block_break_min"`
+				BlockMin       *int     `json:"default_block_min"`
+				DinnerStart    *string  `json:"dinner_start"`
+				DinnerMin      *int     `json:"dinner_min"`
+				SleepCutoff    *string  `json:"sleep_cutoff"`
+				SchoolStart    *string  `json:"school_start"`
+				SchoolEnd      *string  `json:"school_end"`
 			}
 			if err := json.Unmarshal(raw, &op); err != nil {
 				return err
@@ -485,6 +530,47 @@ func (s *Server) toolBatchUpdate(actions []json.RawMessage, replan bool) (map[st
 						break
 					}
 				}
+			case "schedule_block":
+				if op.Date == "" || op.Start == "" || op.End == "" || op.Title == "" {
+					return fmt.Errorf("schedule_block requires date, start, end, and title")
+				}
+				ns, e1 := time.ParseInLocation(localLayout, op.Date+"T"+op.Start, s.loc)
+				ne, e2 := time.ParseInLocation(localLayout, op.Date+"T"+op.End, s.loc)
+				if e1 != nil || e2 != nil || !ne.After(ns) {
+					return fmt.Errorf("invalid schedule_block time range %s %s-%s", op.Date, op.Start, op.End)
+				}
+				locked := op.Locked == nil || *op.Locked
+				b := Block{
+					ID:     "blk-" + s.newID(),
+					TaskID: op.TaskID,
+					Bucket: strings.ToUpper(op.Bucket),
+					Title:  op.Title,
+					Date:   op.Date,
+					Start:  ns.Format(localLayout),
+					End:    ne.Format(localLayout),
+					Status: "planned",
+					Locked: locked,
+				}
+				st.Blocks = append(st.Blocks, b)
+				applied = append(applied, "schedule_block:"+b.Title)
+			case "set_recurring":
+				if err := applyRecurringRule(st, now, s.newID, op.Kind, op.Days, op.Start, op.End, op.Title); err != nil {
+					return err
+				}
+				applied = append(applied, "set_recurring:"+op.Kind)
+			case "update_rules":
+				if applyRulesArgs(&st.Rules, rulesArgs{
+					AfterSchoolMin: op.AfterSchoolMin,
+					BreakMin:       op.BreakMin,
+					BlockMin:       op.BlockMin,
+					DinnerStart:    op.DinnerStart,
+					DinnerMin:      op.DinnerMin,
+					SleepCutoff:    op.SleepCutoff,
+					SchoolStart:    op.SchoolStart,
+					SchoolEnd:      op.SchoolEnd,
+				}) {
+					applied = append(applied, "update_rules")
+				}
 			}
 		}
 		if replan {
@@ -499,6 +585,7 @@ func (s *Server) toolBatchUpdate(actions []json.RawMessage, replan bool) (map[st
 		return nil, err
 	}
 	snap["applied"] = applied
+	snap["rules"] = st.Rules
 	return snap, nil
 }
 
@@ -765,6 +852,74 @@ func (s *Server) toolDailyBriefing(date string) (map[string]any, error) {
 		"quiet_weekday_windows": st.Rules.QuietWeekday,
 		"quiet_weekend_windows": st.Rules.QuietWeekend,
 	}, nil
+}
+
+func (s *Server) toolPlanningContext(date string, days int) (map[string]any, error) {
+	now := s.now()
+	ds := date
+	if ds == "" {
+		ds = now.Format(dateLayout)
+	}
+	if days <= 0 {
+		days = 7
+	}
+	if days > 14 {
+		days = 14
+	}
+	brief, err := s.toolDailyBriefing(ds)
+	if err != nil {
+		return nil, err
+	}
+	week, err := s.toolWeekOverview(ds, days)
+	if err != nil {
+		return nil, err
+	}
+	mom, err := s.toolMomentumAndSessions(10)
+	if err != nil {
+		return nil, err
+	}
+	slotDays := days
+	if slotDays > 3 {
+		slotDays = 3
+	}
+	slots, err := s.toolFindFreeSlots(ds, slotDays, 15)
+	if err != nil {
+		return nil, err
+	}
+	_, st, err := s.store.Get()
+	if err != nil {
+		return nil, err
+	}
+	openTasks := []map[string]any{}
+	for _, t := range st.Tasks {
+		if t.Status != "open" {
+			continue
+		}
+		openTasks = append(openTasks, map[string]any{
+			"id":             t.ID,
+			"course":         t.Course,
+			"title":          t.Title,
+			"category":       t.Category,
+			"due_at":         t.DueAt,
+			"est_minutes":    t.EstMinutes,
+			"cognitive_load": t.CognitiveLoad,
+			"est_source":     t.EstSource,
+		})
+	}
+	endWindow := now.AddDate(0, 0, days).Format(dateLayout)
+	events := []Event{}
+	for _, ev := range st.Events {
+		if len(ev.Start) >= 10 && ev.Start[:10] >= ds && ev.Start[:10] <= endWindow {
+			events = append(events, ev)
+		}
+	}
+	brief["rules"] = st.Rules
+	brief["open_tasks"] = openTasks
+	brief["events"] = events
+	brief["week"] = week
+	brief["momentum"] = mom
+	brief["multi_day_free_slots"] = slots["slots"]
+	return brief, nil
 }
 
 func (s *Server) toolFindFreeSlots(date string, days, minMinutes int) (map[string]any, error) {

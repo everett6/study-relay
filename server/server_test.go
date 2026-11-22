@@ -132,7 +132,7 @@ func TestMCPHandshake(t *testing.T) {
 			t.Fatal("schema must be an object")
 		}
 	}
-	want := "get_schedule_and_buckets,add_or_override_task,apply_event_override,control_study_timer,canvas_explore,get_grades,list_inbox,draft_email,get_week_overview,mark_task_done,manage_block,set_bucket_target,check_in_mood,get_momentum_and_sessions,update_rules_and_breaks,manage_research_milestone,plan_competition_goal,get_study_resources,get_counselor_digest,apply_school_preset,get_audit_log,set_recurring_schedule,batch_update_schedule,replan_now,triage_canvas_opportunities,log_problem_set,get_next_problems,swap_block_focus,get_daily_briefing,find_free_slots,reschedule_missed_blocks,search_tasks,delete_task_or_event,get_assignment_details"
+	want := "get_schedule_and_buckets,add_or_override_task,apply_event_override,control_study_timer,canvas_explore,get_grades,list_inbox,draft_email,get_week_overview,mark_task_done,manage_block,set_bucket_target,check_in_mood,get_momentum_and_sessions,update_rules_and_breaks,manage_research_milestone,plan_competition_goal,get_study_resources,get_counselor_digest,apply_school_preset,get_audit_log,set_recurring_schedule,batch_update_schedule,replan_now,triage_canvas_opportunities,log_problem_set,get_next_problems,swap_block_focus,get_daily_briefing,get_planning_context,find_free_slots,reschedule_missed_blocks,search_tasks,delete_task_or_event,get_assignment_details"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v", names)
 	}
@@ -1075,5 +1075,50 @@ func TestOAuthAuthorizeUsernamePassword(t *testing.T) {
 	}
 	if loc := okResp.Header.Get("Location"); !strings.Contains(loc, "code=code-") || !strings.Contains(loc, "state=st1") {
 		t.Fatalf("unexpected redirect location: %q", loc)
+	}
+}
+
+func TestFastPathPlanningAndBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	la, _ := time.LoadLocation("America/Los_Angeles")
+	s := NewServer(store, Config{}, la, time.Now)
+	seedDemoState(s)
+
+	ctxRes, handled, err := s.callToolV2("get_planning_context", json.RawMessage(`{"days":7}`))
+	if err != nil || !handled {
+		t.Fatalf("get_planning_context failed: handled=%v err=%v", handled, err)
+	}
+	for _, k := range []string{"rules", "open_tasks", "week", "momentum", "multi_day_free_slots"} {
+		if _, ok := ctxRes[k]; !ok {
+			t.Fatalf("get_planning_context missing %q", k)
+		}
+	}
+
+	today := s.now().Format(dateLayout)
+	batchArgs := `{
+		"actions": [
+			{"op":"update_rules","between_block_break_min":15,"sleep_cutoff":"22:30"},
+			{"op":"set_recurring","kind":"recurring_class","days":[7],"start":"09:00","end":"10:00","title":"Sunday Spanish"},
+			{"op":"add","title":"ACT Vocab","course":"ACT","estimated_minutes":15},
+			{"op":"schedule_block","date":"` + today + `","start":"16:00","end":"16:25","title":"ACT Vocab Sprint","bucket":"ACT"}
+		],
+		"replan": true
+	}`
+	bRes, handled, err := s.callToolV2("batch_update_schedule", json.RawMessage(batchArgs))
+	if err != nil || !handled {
+		t.Fatalf("batch_update_schedule failed: handled=%v err=%v", handled, err)
+	}
+	applied, _ := bRes["applied"].([]string)
+	if len(applied) != 4 {
+		t.Fatalf("expected 4 applied actions, got %v", applied)
+	}
+	rules, _ := bRes["rules"].(Rules)
+	if rules.BreakMin != 15 || rules.SleepCutoff != "22:30" {
+		t.Fatalf("unexpected rules after batch update: %+v", rules)
 	}
 }
