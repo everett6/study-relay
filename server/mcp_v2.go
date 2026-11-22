@@ -742,8 +742,12 @@ func (s *Server) toolDailyBriefing(date string) (map[string]any, error) {
 			"course": g.Course, "score": g.Score, "grade": g.Grade,
 		})
 	}
+	targetDay, _ := time.ParseInLocation(dateLayout, ds, s.loc)
+	holiday := schoolHolidayName(targetDay)
 	return map[string]any{
 		"date":                  ds,
+		"holiday":               holiday,
+		"school_day":            isSchoolDay(st.Rules, targetDay),
 		"now":                   now.Format(localLayout),
 		"today_blocks":          snap["today_blocks"],
 		"free_slots":            slots["slots"],

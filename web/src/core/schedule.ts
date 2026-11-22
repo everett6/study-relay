@@ -17,7 +17,37 @@ const MULTI_DAY = new Set(["test", "project"]);
 const DAILY_CAP = 150; // soft daily study cap; due tasks and course reviews may exceed it
 export const PREP_PREFIX = "Get ready: ";
 
-export const isSchoolDay = (r: Rules, d: Date): boolean => r.school_days.includes(isoDow(d));
+/** US federal + public/private school holiday name if no school is held on d. */
+export function schoolHolidayName(day: Date): string {
+  const m = day.getMonth() + 1;
+  const d = day.getDate();
+  const wd = day.getDay(); // 0=Sun..6=Sat
+  const isObserved = (month: number, target: number) => {
+    if (m === month && d === target) return true;
+    if (wd === 5) {
+      const nxt = new Date(day.getFullYear(), day.getMonth(), d + 1);
+      if (nxt.getMonth() + 1 === month && nxt.getDate() === target) return true;
+    }
+    if (wd === 1) {
+      const prv = new Date(day.getFullYear(), day.getMonth(), d - 1);
+      if (prv.getMonth() + 1 === month && prv.getDate() === target) return true;
+    }
+    return false;
+  };
+  if ((m === 12 && d >= 24) || (m === 1 && d === 1) || isObserved(1, 1)) return "Winter Break / New Year's";
+  if (m === 1 && wd === 1 && d >= 15 && d <= 21) return "MLK Jr. Day";
+  if (m === 2 && wd === 1 && d >= 15 && d <= 21) return "Presidents' Day";
+  if (m === 5 && wd === 1 && d >= 25) return "Memorial Day";
+  if (isObserved(6, 19)) return "Juneteenth";
+  if (isObserved(7, 4)) return "Independence Day";
+  if (m === 9 && wd === 1 && d <= 7) return "Labor Day";
+  if (m === 10 && wd === 1 && d >= 8 && d <= 14) return "Indigenous Peoples' / Columbus Day";
+  if (isObserved(11, 11)) return "Veterans Day";
+  if (m === 11 && ((wd === 4 && d >= 22 && d <= 28) || (wd === 5 && d >= 23 && d <= 29))) return "Thanksgiving Break";
+  return "";
+}
+
+export const isSchoolDay = (r: Rules, d: Date): boolean => !schoolHolidayName(d) && r.school_days.includes(isoDow(d));
 
 /** The day's dismissal time, honouring per-weekday overrides (block days). */
 export const schoolEnd = (r: Rules, d: Date): string => r.school_end_by_day?.[String(isoDow(d))] || r.school_end;

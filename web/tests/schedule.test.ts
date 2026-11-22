@@ -117,4 +117,14 @@ describe("planner buffer rules", () => {
     expect(validateBlock(r, [], "2026-11-19T22:00", "2026-11-19T23:00")).toMatch(/outside|sleep/);
     expect(validateBlock(r, [], "2026-11-19T16:30", "2026-11-19T17:15")).toBeNull();
   });
+
+  it("treats US public & private school national holidays as non-school days", () => {
+    const r = defaultState().rules;
+    // Thanksgiving Thursday (2026-11-26) and Friday after (2026-11-27): morning 10:00-10:45 is open!
+    expect(validateBlock(r, [], "2026-11-26T10:00", "2026-11-26T10:45")).toBeNull();
+    expect(validateBlock(r, [], "2026-11-27T10:00", "2026-11-27T10:45")).toBeNull();
+    // MLK Jr. Day (2026-01-19) and Winter Break (2026-12-28)
+    expect(validateBlock(r, [], "2026-01-19T10:00", "2026-01-19T10:45")).toBeNull();
+    expect(validateBlock(r, [], "2026-12-28T10:00", "2026-12-28T10:45")).toBeNull();
+  });
 });

@@ -755,15 +755,31 @@ func TestMCPExtendedToolsResourcesPrompts(t *testing.T) {
 	// Verify saving integration config to a temp .env without returning secrets.
 	tmpEnv := filepath.Join(t.TempDir(), ".env")
 	t.Setenv("RELAY_ENV_FILE", tmpEnv)
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/integrations/config", strings.NewReader(`{"email_provider":"gmail","email_user":"student@gmail.com","email_password":"app-pw","discord_bot_token":"bot-tok","discord_channel_ids":"111,222"}`))
+	req := httptest.NewRequest("POST", "/api/integrations/config", strings.NewReader(`{"email_provider":"gmail","email_user":"student@gmail.com","email_password":"app-pw","discord_bot_token":"bot-tok","discord_channel_ids":"111,222","llm_provider":"openrouter","local_llm_api_key":"sk-or-saved"}`))
 	h.ServeHTTP(rec, req)
-	if rec.Code != 200 || strings.Contains(rec.Body.String(), "app-pw") || strings.Contains(rec.Body.String(), "bot-tok") {
+	if rec.Code != 200 || strings.Contains(rec.Body.String(), "app-pw") || strings.Contains(rec.Body.String(), "bot-tok") || strings.Contains(rec.Body.String(), "sk-or-saved") {
 		t.Fatalf("saveIntegrationsConfigHTTP: code=%d body=%s", rec.Code, rec.Body.String())
 	}
 	rawEnv, err := os.ReadFile(tmpEnv)
-	if err != nil || !strings.Contains(string(rawEnv), "IMAP_ADDR=imap.gmail.com:993") || !strings.Contains(string(rawEnv), "DISCORD_CHANNEL_IDS=111,222") {
+	if err != nil || !strings.Contains(string(rawEnv), "IMAP_ADDR=imap.gmail.com:993") || !strings.Contains(string(rawEnv), "DISCORD_CHANNEL_IDS=111,222") || !strings.Contains(string(rawEnv), "OPENROUTER_API_KEY=sk-or-saved") {
 		t.Fatalf("env file contents: err=%v %s", err, string(rawEnv))
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/integrations/config", strings.NewReader(`{"llm_provider":"openai","local_llm_api_key":"sk-openai-saved"}`)))
+	if rec.Code != 200 {
+		t.Fatalf("save second provider key: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rawEnv, err = os.ReadFile(tmpEnv)
+	if err != nil || !strings.Contains(string(rawEnv), "OPENROUTER_API_KEY=sk-or-saved") || !strings.Contains(string(rawEnv), "OPENAI_API_KEY=sk-openai-saved") {
+		t.Fatalf("provider keys should persist independently: err=%v %s", err, string(rawEnv))
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/integrations/config", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"openrouter_key_configured":true`) || !strings.Contains(rec.Body.String(), `"openai_key_configured":true`) || strings.Contains(rec.Body.String(), "sk-or-saved") || strings.Contains(rec.Body.String(), "sk-openai-saved") {
+		t.Fatalf("provider key status response: code=%d body=%s", rec.Code, rec.Body.String())
 	}
 
 	// Verify cloud gpt-6-luna proxy sends Bearer auth + response_format without Ollama options.
@@ -853,5 +869,21 @@ func TestPiMatrixEstimatorParsesDirectionsAndComments(t *testing.T) {
 	}
 	if est.Minutes != 45 || est.CognitiveLoad != 4 {
 		t.Fatalf("unexpected estimate: %+v", est)
+	}
+}
+
+func TestSchoolHolidaysOpenFullDay(t *testing.T) {
+	r := DefaultState().Rules
+	la, _ := time.LoadLocation("America/Los_Angeles")
+	// Thanksgiving (Thu Nov 26, 2026) and Friday after (Nov 27, 2026) are not school days.
+	for _, ds := range []string{"2026-11-26", "2026-11-27", "2026-01-19", "2026-12-28"} {
+		d, _ := time.ParseInLocation(dateLayout, ds, la)
+		if isSchoolDay(r, d) {
+			t.Fatalf("%s (%s) should be a school holiday", ds, schoolHolidayName(d))
+		}
+	}
+	normal, _ := time.ParseInLocation(dateLayout, "2026-11-23", la)
+	if !isSchoolDay(r, normal) {
+		t.Fatalf("2026-11-23 should be a normal school day")
 	}
 }

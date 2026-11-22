@@ -29,7 +29,61 @@ func at(day time.Time, minutes int) time.Time {
 	return time.Date(y, mo, d, 0, 0, 0, 0, day.Location()).Add(time.Duration(minutes) * time.Minute)
 }
 
+// schoolHolidayName returns the US federal/public+private school holiday name if no school is held on day.
+func schoolHolidayName(day time.Time) string {
+	m := day.Month()
+	d := day.Day()
+	wd := int(day.Weekday()) // 0=Sun..6=Sat
+	// Observed fixed-date federal holidays (Fri if Sat, Mon if Sun)
+	isObserved := func(month time.Month, target int) bool {
+		if m == month && d == target {
+			return true
+		}
+		if wd == 5 && day.AddDate(0, 0, 1).Month() == month && day.AddDate(0, 0, 1).Day() == target {
+			return true
+		}
+		if wd == 1 && day.AddDate(0, 0, -1).Month() == month && day.AddDate(0, 0, -1).Day() == target {
+			return true
+		}
+		return false
+	}
+	if (m == time.December && d >= 24) || (m == time.January && d == 1) || isObserved(time.January, 1) {
+		return "Winter Break / New Year's"
+	}
+	if m == time.January && wd == 1 && d >= 15 && d <= 21 {
+		return "MLK Jr. Day"
+	}
+	if m == time.February && wd == 1 && d >= 15 && d <= 21 {
+		return "Presidents' Day"
+	}
+	if m == time.May && wd == 1 && d >= 25 {
+		return "Memorial Day"
+	}
+	if isObserved(time.June, 19) {
+		return "Juneteenth"
+	}
+	if isObserved(time.July, 4) {
+		return "Independence Day"
+	}
+	if m == time.September && wd == 1 && d <= 7 {
+		return "Labor Day"
+	}
+	if m == time.October && wd == 1 && d >= 8 && d <= 14 {
+		return "Indigenous Peoples' / Columbus Day"
+	}
+	if isObserved(time.November, 11) {
+		return "Veterans Day"
+	}
+	if m == time.November && ((wd == 4 && d >= 22 && d <= 28) || (wd == 5 && d >= 23 && d <= 29)) {
+		return "Thanksgiving Break"
+	}
+	return ""
+}
+
 func isSchoolDay(r Rules, day time.Time) bool {
+	if schoolHolidayName(day) != "" {
+		return false
+	}
 	wd := int(day.Weekday())
 	if wd == 0 {
 		wd = 7
