@@ -19,7 +19,9 @@ type View = "today" | "week" | "tasks" | "inbox";
 
 const store = new Store(httpTransport());
 let llmStatus: LLMStatus;
-const llm = new LLMClient((s) => { llmStatus = s; renderModelChip(); });
+let relayModelName = "";
+let modelSheetRefresh: (() => void) | null = null;
+const llm = new LLMClient((s) => { llmStatus = s; renderModelChip(); modelSheetRefresh?.(); });
 llmStatus = llm.status;
 const engine = new Engine(store, llm);
 const voice = new Voice();
@@ -106,21 +108,41 @@ function render() {
   });
 }
 
-function shortModelName(s?: string): string {
-  if (!s) return "Smart AI on";
-  const tail = s.split("/").pop() ?? s;
-  return tail.replace(/:free$/, "").slice(0, 22);
+function modelDisplayName(id?: string, label?: string): string {
+  if (label) return label;
+  if (id === "native") return relayModelName || "Relay AI";
+  return MODELS.find((m) => m.id === id)?.label ?? (id ? id : "Smart AI");
+}
+
+/** Last real round-trip to the model: proves it is actually connected, not just "loaded". */
+let aiConn: { ok: boolean; ms: number; error?: string; at: number } | null = null;
+async function pingAI(): Promise<void> {
+  if (!llm.ready) { aiConn = null; renderModelChip(); return; }
+  const r = await llm.ping();
+  aiConn = { ...r, at: Date.now() };
+  renderModelChip();
+  if (!r.ok) toast(`AI not connecting: ${r.error}`, "warn");
 }
 
 function renderModelChip() {
   const c = document.getElementById("model-chip");
   if (!c) return;
-  const st = llmStatus.state;
-  c.className = `chip model ${st}`;
-  c.title = st === "ready" ? `${llmStatus.provider ?? "AI"}: ${llmStatus.modelLabel ?? llmStatus.model ?? "ready"}` : llmStatus.text;
-  c.replaceChildren(svg(ICON.spark), h("span", null,
-    st === "ready" ? shortModelName(llmStatus.modelLabel ?? llmStatus.model)
-      : st === "loading" ? `Loading ${Math.round(llmStatus.progress * 100)}%` : "Smart AI"));
+  const { state: st } = llmStatus;
+  const requestedModel = llmStatus.model ?? localStorage.getItem("llm_model") ?? undefined;
+  const name = modelDisplayName(requestedModel, llmStatus.modelLabel);
+  const conn = st === "ready" && aiConn ? (aiConn.ok ? "online" : "offline") : "";
+  c.className = `chip model ${st} ${conn}`;
+  c.title = `${llmStatus.provider ? `${llmStatus.provider} · ` : ""}${name} · ${llmStatus.text}` +
+    (aiConn ? (aiConn.ok ? ` · connected (${(aiConn.ms / 1000).toFixed(1)}s round-trip)` : ` · NOT connecting: ${aiConn.error}`) : "");
+  c.setAttribute("aria-label", `AI model: ${name}. ${llmStatus.text}. Click to switch models.`);
+  const dotColor = conn === "online" ? "#22c55e" : conn === "offline" ? "#ef4444" : st === "loading" || (st === "ready" && !aiConn) ? "#f59e0b" : "#9ca3af";
+  const stateText = st === "ready" ? "Active" : st === "loading" ? `Loading ${Math.round(llmStatus.progress * 100)}%`
+    : st === "unsupported" ? "Unavailable" : st === "error" ? "Load failed" : "Off";
+  c.replaceChildren(
+    h("span", { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};margin-right:4px` }),
+    svg(ICON.spark),
+    h("span", { class: "model-name" }, st === "off" && !requestedModel ? "Smart AI off" : name),
+    h("small", { class: "model-status" }, stateText));
 }
 
 // ------------------------------------------------------------------ Today
@@ -997,23 +1019,29 @@ async function ask(textIn?: string, speak = false): Promise<Reply[]> {
     thinkBox.replaceChildren(h("div", { class: "muted small", style: "padding:4px 10px" }, `Thinking with ${who}…`));
   }
   dock.classList.add("thinking");
+  const t0 = performance.now();
   try {
     const replies = await engine.run(text);
+    const ms = Math.round(performance.now() - t0);
+    const aiErr = replies.find((r) => r.text.startsWith("AI error"));
+    if (llm.ready) { aiConn = aiErr ? { ok: false, ms, error: aiErr.text.slice(10), at: Date.now() } : { ok: true, ms, at: Date.now() }; renderModelChip(); }
     for (const r of replies) toast(r.text, r.tone ?? "info");
     if (thinkBox) {
       const th = engine.lastThinking.trim();
-      if (th) {
-        thinkBox.hidden = false;
-        thinkBox.replaceChildren(
-          h("details", { style: "padding:4px 10px;font-size:12px" },
-            h("summary", { style: "cursor:pointer;color:var(--muted)" }, `Model thinking (${llm.chatHistory.length / 2} turns in context)`),
-            h("pre", { style: "white-space:pre-wrap;max-height:140px;overflow:auto;margin:6px 0 0;font-family:inherit;color:var(--muted)" }, th),
-            h("button", { type: "button", class: "btn ghost sm", style: "margin-top:4px", onclick: () => { llm.clearHistory(); thinkBox.hidden = true; toast("Chat context cleared.", "ok"); } }, "Clear context")),
-        );
-      } else {
-        thinkBox.hidden = true;
-        thinkBox.replaceChildren();
-      }
+      const who = !llm.ready ? "Built-in rules (no AI loaded — tap Smart AI to connect)"
+        : aiErr ? `${llm.status.modelLabel ?? "AI"} — not connecting`
+          : `${llm.status.modelLabel ?? "AI"} · ${(ms / 1000).toFixed(1)}s${engine.lastVia === "rules" ? " (fell back to rules)" : ""}`;
+      thinkBox.hidden = false;
+      thinkBox.replaceChildren(
+        h("div", { style: "padding:4px 10px;font-size:12px" },
+          h("div", { class: "muted small" }, `Answered by ${who} · ${Math.floor(llm.chatHistory.length / 2)} turns in context`),
+          th ? h("details", { open: true },
+            h("summary", { style: "cursor:pointer;color:var(--muted)" }, "Model reasoning"),
+            h("pre", { style: "white-space:pre-wrap;max-height:180px;overflow:auto;margin:6px 0 0;font-family:inherit;color:var(--muted)" }, th)) : null,
+          h("div", { class: "row", style: "gap:6px;margin-top:4px" },
+            h("button", { type: "button", class: "btn ghost sm", onclick: () => { llm.clearHistory(); thinkBox.hidden = true; toast("Chat context cleared.", "ok"); } }, "Clear context"),
+            h("button", { type: "button", class: "btn ghost sm", onclick: () => { thinkBox.hidden = true; } }, "Hide"))),
+      );
     }
     if (speak) for (const r of replies) await voice.speak(r.text);
     if (replies.some((r) => /^Nice, .* is done/.test(r.text))) confetti();
@@ -1124,7 +1152,7 @@ async function useRelayAI(): Promise<boolean> {
   const token = localStorage.getItem("relay_token") ?? "";
   if (!(await LLMClient.nativeStatus(token)).ok) return false;
   const ok = await llm.load("native", { token });
-  if (ok) { toast(`Smart AI is running through your relay (${llm.status.text}).`, "ok"); void engine.estimateMissing(); }
+  if (ok) { toast(`Smart AI is running through your relay (${llm.status.text}).`, "ok"); void pingAI(); void engine.estimateMissing(); }
   return ok;
 }
 
@@ -1188,6 +1216,7 @@ function openModelSheet() {
         render();
         if (ok) {
           toast(`Switched to ${llm.status.modelLabel ?? m.label} (context preserved).`, "ok");
+          void pingAI();
           void engine.estimateMissing();
         } else {
           toast(llm.status.text, "warn");
@@ -1729,7 +1758,9 @@ async function openSetupWizard() {
     const tok = localStorage.getItem("relay_token") ?? "";
     void LLMClient.nativeStatus(tok).then(async (st) => {
       if (st.ok && (!saved || saved === "native" || !(await LLMClient.supported()))) {
-        void llm.load("native", { token: tok, thinking: localStorage.getItem("llm_thinking") !== "0" });
+        if (await llm.load("native", { token: tok, thinking: localStorage.getItem("llm_thinking") !== "0" })) void pingAI();
+      } else if (!st.ok) {
+        toast(`Relay AI not reachable${st.error ? `: ${st.error}` : ""}. Using built-in rules.`, "warn");
       }
     });
   }
@@ -1767,7 +1798,9 @@ document.addEventListener("keydown", (e) => {
     const tok = localStorage.getItem("relay_token") ?? "";
     void LLMClient.nativeStatus(tok).then(async (st) => {
       if (st.ok && (!saved || saved === "native" || !(await LLMClient.supported()))) {
-        void llm.load("native", { token: tok, thinking: localStorage.getItem("llm_thinking") !== "0" });
+        if (await llm.load("native", { token: tok, thinking: localStorage.getItem("llm_thinking") !== "0" })) void pingAI();
+      } else if (!st.ok) {
+        toast(`Relay AI not reachable${st.error ? `: ${st.error}` : ""}. Using built-in rules.`, "warn");
       }
     });
   }

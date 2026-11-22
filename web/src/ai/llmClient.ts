@@ -236,13 +236,17 @@ function workerEngine(backend: Backend, onProgress: (p: { progress: number; text
     ? new Worker(new URL("./lfmWorker.ts", import.meta.url), { type: "module" })
     : new Worker(new URL("./llmWorker.ts", import.meta.url), { type: "module" });
   let seq = 0;
+  let stopped = false;
   const waiting = new Map<number, { ok: (v: Record<string, unknown>) => void; fail: (e: Error) => void }>();
+  const failWaiting = (error: Error) => {
+    for (const w of waiting.values()) w.fail(error);
+    waiting.clear();
+  };
   worker.onmessage = (e: MessageEvent) => {
     const m = e.data as Record<string, unknown>;
     if (m.type === "progress") return onProgress(m as unknown as { progress: number; text: string });
     if (m.type === "error") {
-      for (const w of waiting.values()) w.fail(new Error(String(m.error || "worker error")));
-      waiting.clear();
+      failWaiting(new Error(String(m.error || "worker error")));
       return;
     }
     const w = waiting.get(m.id as number);
@@ -253,15 +257,21 @@ function workerEngine(backend: Backend, onProgress: (p: { progress: number; text
   worker.onerror = (e) => {
     const detail = e.message || (e.error instanceof Error ? e.error.message : "") || (e.filename ? `${e.filename}:${e.lineno}` : "");
     const msg = detail || "worker crashed (browser GPU/memory limit)";
-    for (const w of waiting.values()) w.fail(new Error(msg));
-    waiting.clear();
+    failWaiting(new Error(msg));
   };
   const call = (msg: Record<string, unknown>) => new Promise<Record<string, unknown>>((ok, fail) => {
+    if (stopped) { fail(new Error("Model worker is no longer active")); return; }
     const id = ++seq;
     waiting.set(id, { ok, fail });
     worker.postMessage({ ...msg, id });
   });
-  return { call, worker };
+  const terminate = () => {
+    if (stopped) return;
+    stopped = true;
+    worker.terminate();
+    failWaiting(new Error("Model load was superseded"));
+  };
+  return { call, terminate };
 }
 
 export type LLMStatus = { state: "off" | "unsupported" | "loading" | "ready" | "error"; progress: number; text: string; model?: string; modelLabel?: string; provider?: string; reason?: GpuProblem };
@@ -290,7 +300,8 @@ export async function checkWebGPU(tries = 3): Promise<GpuCheck> {
 export class LLMClient {
   status: LLMStatus = { state: "off", progress: 0, text: "Smart mode is off. Rules handle commands." };
   private engine: Engine | null = null;
-  private activeWorker: Worker | null = null;
+  private activeWorker: ReturnType<typeof workerEngine> | null = null;
+  private loadGeneration = 0;
   private onChange: (s: LLMStatus) => void;
   /** Reasoning/thinking enabled by default for Relay AI & thinking-capable models. */
   thinking = true;
@@ -329,6 +340,7 @@ export class LLMClient {
 
   /** Terminate any running Web Worker and free GPU/RAM weights. */
   unload(): void {
+    this.loadGeneration++;
     this.activeWorker?.terminate();
     this.activeWorker = null;
     this.engine = null;
@@ -348,18 +360,26 @@ export class LLMClient {
 
   /** Opt-in model load (only call from a user click). Supports switching models cleanly. */
   async load(model: string = MODELS[0].id, opts: { thinking?: boolean; token?: string; prefixCache?: boolean } = {}): Promise<boolean> {
+    const generation = ++this.loadGeneration;
     this.activeWorker?.terminate();
     this.activeWorker = null;
     this.engine = null;
     this.estCache.clear();
     try { localStorage.setItem("llm_model", model); } catch { /* ignore */ }
-    const backend = MODELS.find((m) => m.id === model)?.backend ?? "webllm";
+    const modelInfo = MODELS.find((m) => m.id === model);
+    if (!modelInfo) {
+      this.set({ state: "error", progress: 0, model, modelLabel: undefined, provider: undefined, reason: undefined, text: `Unknown model “${model}”. Choose a model again.` });
+      return false;
+    }
+    const backend = modelInfo.backend;
     if (backend === "native") {
       this.thinking = opts.thinking ?? true;
-      this.set({ state: "loading", progress: 0.2, text: "Connecting to Relay AI…", model });
+      this.set({ state: "loading", progress: 0.2, text: "Connecting to Relay AI…", model, modelLabel: undefined, provider: undefined, reason: undefined });
       const st = await LLMClient.nativeStatus(opts.token);
+      if (generation !== this.loadGeneration) return false;
       if (!st.ok) {
-        this.set({ state: "error", text: st.error ? `Relay AI: ${st.error}` : "Relay AI unreachable (check Settings → Connections or Ollama)." });
+        this.set({ state: "error", progress: 0, modelLabel: undefined, provider: undefined,
+          text: st.error ? `Relay AI: ${st.error}` : "Relay AI unreachable (check Settings → Connections or Ollama)." });
         return false;
       }
       const url = st.url ?? "";
@@ -368,6 +388,7 @@ export class LLMClient {
         : url.includes("azure.com") ? "Azure"
         : "Ollama";
       const modelName = st.model || "lfm2.5";
+      if (generation !== this.loadGeneration) return false;
       this.engine = {
         chat: async (request) => {
           const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -375,8 +396,10 @@ export class LLMClient {
           const r = await fetch("/api/llm/chat", { method: "POST", headers, body: JSON.stringify(request) });
           const d = await r.json().catch(() => ({})) as { content?: string; reasoning?: string; error?: string };
           if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
-          this.lastThinking = String(d.reasoning ?? "").trim();
-          return String(d.content ?? "");
+          const reasoning = String(d.reasoning ?? "").trim();
+          const content = String(d.content ?? "");
+          // carry reasoning inline (per call) so concurrent background calls can't overwrite it
+          return reasoning && content.trim() !== reasoning ? `<think>${reasoning}</think>${content}` : content;
         },
       };
       this.set({
@@ -387,32 +410,42 @@ export class LLMClient {
       return true;
     }
     const gpu = await checkWebGPU();
+    if (generation !== this.loadGeneration) return false;
     // in-browser models need WebGPU (LFM3's ONNX files use a GPU-only op, so there's no CPU path);
     // the app then offers the relay's model instead
     if (!gpu.ok) {
-      this.set({ state: "unsupported", reason: gpu.reason, text: gpu.text });
+      this.set({ state: "unsupported", reason: gpu.reason, text: gpu.text, model, modelLabel: undefined, provider: undefined });
       return false;
     }
-    this.set({ state: "loading", progress: 0, text: "Starting…", model });
+    this.set({ state: "loading", progress: 0, text: "Starting…", model, modelLabel: undefined, provider: undefined, reason: undefined });
     try {
       this.thinking = !!opts.thinking;
-      const { call, worker } = workerEngine(backend, (p) => this.set({ progress: p.progress, text: p.text }));
+      const worker = workerEngine(backend, (p) => {
+        if (generation === this.loadGeneration) this.set({ progress: p.progress, text: p.text });
+      });
       this.activeWorker = worker;
       // ask the browser not to evict the cached model weights when storage runs low
       void navigator.storage?.persist?.().catch(() => false);
-      try { await call({ type: "load", model, contextTokens: CONTEXT_TOKENS, prefixCache: opts.prefixCache ?? true }); }
-      catch (e) { worker.terminate(); this.activeWorker = null; throw e; }
+      await worker.call({ type: "load", model, contextTokens: CONTEXT_TOKENS, prefixCache: opts.prefixCache ?? true });
+      if (generation !== this.loadGeneration) {
+        worker.terminate();
+        if (this.activeWorker === worker) this.activeWorker = null;
+        return false;
+      }
       this.engine = { chat: async (request) => {
-        const r = await call({ type: "chat", request });
+        const r = await worker.call({ type: "chat", request });
         this.lastPromptTokens = Number(r.prompt_tokens) || 0;
         return String(r.content ?? "");
       } };
-      const label = MODELS.find((m) => m.id === model)?.label ?? model;
+      const label = modelInfo.label;
       this.set({ state: "ready", progress: 1, reason: undefined, model, modelLabel: label, provider: "WebGPU", text: `${label} is running on your GPU` });
       return true;
     } catch (e) {
+      if (generation !== this.loadGeneration) return false;
+      this.activeWorker?.terminate();
+      this.activeWorker = null;
       this.engine = null;
-      this.set({ state: "error", text: `Couldn't load the model: ${String(e).slice(0, 140)}` });
+      this.set({ state: "error", progress: 0, modelLabel: undefined, provider: undefined, reason: undefined, text: `Couldn't load the model: ${String(e).slice(0, 140)}` });
       return false;
     }
   }
@@ -435,8 +468,36 @@ export class LLMClient {
     }
     this.lastRaw = txt;
     const thinkMatch = txt.match(/<think>([\s\S]*?)<\/think>/);
-    if (thinkMatch?.[1]?.trim()) this.lastThinking = thinkMatch[1].trim();
+    this.lastThinking = thinkMatch?.[1]?.trim() ?? "";
     return parseJSONReply(txt);
+  }
+
+  /** Same as json() but returns this call's raw text + reasoning (safe against concurrent calls). */
+  private async jsonCall(system: string, user: string, maxTokens: number, cachePrefix: string, schema: object | undefined,
+    history: Array<{ role: "user" | "assistant"; content: string }>): Promise<{ value: unknown; raw: string; thinking: string }> {
+    if (!this.engine) return { value: null, raw: "", thinking: "" };
+    const txt = await this.engine.chat({
+      messages: [{ role: "system", content: system }, ...history, { role: "user", content: user }],
+      temperature: 0.1, max_tokens: this.thinking ? maxTokens + 1024 : maxTokens,
+      response_format: { type: "json_object" }, enable_thinking: this.thinking, cache_prefix: cachePrefix,
+      ...(schema ? { json_schema: JSON.stringify(schema) } : {}),
+    });
+    this.lastRaw = txt;
+    const thinking = txt.match(/<think>([\s\S]*?)<\/think>/)?.[1]?.trim() ?? "";
+    this.lastThinking = thinking;
+    return { value: parseJSONReply(txt), raw: txt, thinking };
+  }
+
+  /** Real round-trip to the active model; returns latency or the error. */
+  async ping(): Promise<{ ok: boolean; ms: number; error?: string }> {
+    if (!this.engine) return { ok: false, ms: 0, error: "no model loaded" };
+    const t0 = performance.now();
+    try {
+      await this.engine.chat({ messages: [{ role: "user", content: "Reply with: ok" }], temperature: 0, max_tokens: 64, enable_thinking: false });
+      return { ok: true, ms: Math.round(performance.now() - t0) };
+    } catch (e) {
+      return { ok: false, ms: Math.round(performance.now() - t0), error: String((e as Error).message ?? e).slice(0, 200) };
+    }
   }
 
   private estCache = new Map<string, Estimate>();
@@ -501,25 +562,30 @@ export class LLMClient {
         `Open tasks:\n${relevantTasks(state, text, now, 12) || "(none)"}` +
         ((state.grades ?? []).length ? `\nGrades (weakest first): ${gradeLine(state, now)}` : "") +
         ((state.flags ?? []).some((f) => f.status !== "dismissed") ? `\nZeros/missing: ${(state.flags ?? []).filter((f) => f.status !== "dismissed").slice(0, 4).map((f) => `${f.course}: ${f.title} (${f.kind === "zero" ? `0/${f.points}` : "missing"}${f.status === "planned" ? ", make-up planned" : ""})`).join("; ")}` : "");
-      const j = (await this.json(fixed + context, text, 400, fixed, PLANNER_SCHEMA, this.chatHistory.slice(-8))) as { calls?: unknown; reply?: unknown } | null;
+      const res = await this.jsonCall(fixed + context, text, 400, fixed, PLANNER_SCHEMA, this.chatHistory.slice(-8));
+      const j = res.value as { calls?: unknown; reply?: unknown } | null;
       let raw = validateCalls(j?.calls ?? []);
-      if (!raw.length) raw = validateCalls(salvageCalls(this.lastRaw));
+      if (!raw.length) raw = validateCalls(salvageCalls(res.raw));
+      // Cloud/relay models are smart enough to trust; the regex intent gate is only for tiny in-browser models.
+      const trusted = this.status.model === "native";
       const want = intendedTools(text);
-      const modelCalls = raw.filter((c) => want.has(c.tool));
-      let reply = typeof j?.reply === "string" ? j.reply.slice(0, 400) : "";
-      if (!reply && !modelCalls.length && this.lastRaw) {
-        const cleaned = this.lastRaw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-        if (cleaned && !cleaned.startsWith("{")) reply = cleaned.slice(0, 400);
+      const modelCalls = trusted ? raw : raw.filter((c) => want.has(c.tool));
+      let reply = typeof j?.reply === "string" ? j.reply.slice(0, 600) : "";
+      if (!reply && !modelCalls.length && res.raw) {
+        const cleaned = res.raw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+        if (cleaned && !cleaned.startsWith("{")) reply = cleaned.slice(0, 600);
       }
-      const calls = mergeCalls(modelCalls, rules, text);
+      const calls = trusted
+        ? (modelCalls.length ? modelCalls.slice(0, 4) : rules)
+        : mergeCalls(modelCalls, rules, text);
       this.chatHistory.push({ role: "user", content: text });
       if (reply || calls.length) {
         this.chatHistory.push({ role: "assistant", content: reply || calls.map((c) => c.tool).join(", ") });
       }
       this.saveHistory();
-      return { calls, modelCalls, reply, thinking: this.lastThinking, via: calls.some((c) => modelCalls.includes(c)) ? "llm" : "rules" };
+      return { calls, modelCalls, reply, thinking: res.thinking, via: calls.some((c) => modelCalls.includes(c)) ? "llm" : "rules" };
     } catch (e) {
-      return { calls: rules, modelCalls: [], reply: rules.length ? "" : `AI error: ${String(e).slice(0, 180)}`, thinking: this.lastThinking, via: "rules" };
+      return { calls: rules, modelCalls: [], reply: rules.length ? "" : `AI error: ${String((e as Error).message ?? e).slice(0, 200)}`, thinking: "", via: "rules" };
     }
   }
 
