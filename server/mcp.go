@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/mail"
 	"sort"
@@ -281,24 +283,31 @@ type mcpSessions struct {
 }
 
 func (s *Server) mcpPost(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	s.touchPresence()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "read error")
 		return
 	}
 	var out []byte
+	var rpcLabel string
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		var reqs []rpcRequest
 		if err := json.Unmarshal(trimmed, &reqs); err != nil {
+			rpcLabel = "batch:parse_err"
 			out, _ = json.Marshal(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{-32700, "parse error"}})
 		} else {
 			resps := []rpcResponse{}
+			labels := make([]string, 0, len(reqs))
 			for _, rq := range reqs {
+				labels = append(labels, rq.Method)
 				if resp := s.handleRPC(rq); resp != nil {
 					resps = append(resps, *resp)
 				}
 			}
+			rpcLabel = "batch[" + strings.Join(labels, ",") + "]"
 			if len(resps) > 0 {
 				out, _ = json.Marshal(resps)
 			}
@@ -306,9 +315,21 @@ func (s *Server) mcpPost(w http.ResponseWriter, r *http.Request) {
 	} else {
 		var rq rpcRequest
 		if err := json.Unmarshal(trimmed, &rq); err != nil {
+			rpcLabel = "parse_err"
 			out, _ = json.Marshal(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{-32700, "parse error"}})
-		} else if resp := s.handleRPC(rq); resp != nil {
-			out, _ = json.Marshal(resp)
+		} else {
+			rpcLabel = rq.Method
+			if rq.Method == "tools/call" {
+				var p struct {
+					Name string `json:"name"`
+				}
+				if json.Unmarshal(rq.Params, &p) == nil && p.Name != "" {
+					rpcLabel = "tools/call:" + p.Name
+				}
+			}
+			if resp := s.handleRPC(rq); resp != nil {
+				out, _ = json.Marshal(resp)
+			}
 		}
 	}
 
@@ -328,14 +349,25 @@ func (s *Server) mcpPost(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		log.Printf("mcp: POST /mcp?sessionId=%s %s dur=%s bytes=%d", sid, rpcLabel, time.Since(start).Round(time.Millisecond), len(out))
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	if out == nil { // notifications only
+		log.Printf("mcp: POST /mcp %s status=202 dur=%s", rpcLabel, time.Since(start).Round(time.Millisecond))
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
+	log.Printf("mcp: POST /mcp %s status=200 dur=%s bytes=%d", rpcLabel, time.Since(start).Round(time.Millisecond), len(out))
 	w.Header().Set("Content-Type", "application/json")
+	if len(out) > 2048 && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+		_, _ = gz.Write(out)
+		_ = gz.Close()
+		return
+	}
 	_, _ = w.Write(out)
 }
 

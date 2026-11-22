@@ -32,7 +32,7 @@ CPUQuota=25%
 CPUWeight=10
 IOWeight=10
 IOSchedulingClass=idle
-Nice=19
+Nice=10
 AllowedCPUs=0
 TasksMax=64
 
