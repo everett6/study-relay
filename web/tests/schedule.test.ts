@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { plan, validateBlock } from "../src/core/schedule";
+import { fixedSpans, plan, validateBlock } from "../src/core/schedule";
 import { defaultState, type State, type Task } from "../src/core/types";
 import { hm, parseLocal } from "../src/core/time";
 
@@ -23,6 +23,16 @@ function state(tasks: Task[] = []): State {
 const mm = (iso: string) => hm(iso.slice(11));
 
 describe("planner buffer rules", () => {
+  it("ignores Piano tasks, events, and existing blocks", () => {
+    const s = state([task({ id: "piano", course: "Music", title: "Piano lesson", estimated_minutes: 60 })]);
+    s.events.push({ id: "piano-event", title: "Piano recital", kind: "event", start: "2026-11-19T16:15", end: "2026-11-19T18:00" });
+    s.blocks.push({ id: "piano-block", date: "2026-11-19", start: "2026-11-19T16:15", end: "2026-11-19T17:00",
+      kind: "task", task_id: "piano", bucket: "SCHOOL", title: "Music: Piano lesson", load: 3, quiet: false, locked: true, status: "planned" });
+
+    expect(fixedSpans(s.rules, NOW, s.events).some((span) => span.title.includes("Piano"))).toBe(false);
+    expect(plan(s, NOW, { newId: id }).blocks.some((b) => b.task_id === "piano")).toBe(false);
+  });
+
   it("never schedules in school, the after-school break, dinner or after the sleep cutoff", () => {
     const s = state([task({}), task({ id: "x", title: "Unit test", category: "test", task_type: "Exam", due_at: "2026-11-24T08:30", estimated_minutes: 180 })]);
     const r = plan(s, NOW, { newId: id });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Store, type Transport } from "../src/core/store";
+import { normalize, Store, type Transport } from "../src/core/store";
 import { defaultState, type State } from "../src/core/types";
 
 function fakeRelay() {
@@ -17,6 +17,17 @@ function fakeRelay() {
 }
 
 describe("store sync", () => {
+  it("adds the Self-improvement goal when normalizing older saved state", () => {
+    const old = defaultState();
+    old.buckets = old.buckets.filter((b) => b.key !== "SELF");
+    old.buckets[0].target_hours = 7;
+
+    const migrated = normalize(old);
+    expect(migrated.buckets.find((b) => b.key === "SELF")).toMatchObject({ name: "Self-improvement", target_hours: 2 });
+    expect(migrated.buckets[0].target_hours).toBe(7);
+    expect(normalize(migrated).buckets.filter((b) => b.key === "SELF")).toHaveLength(1);
+  });
+
   it("rebases local edits on a 409 instead of dropping either side", async () => {
     const relay = fakeRelay();
     const store = new Store(relay.t, false);

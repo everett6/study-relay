@@ -3,12 +3,12 @@
 // transformers.js (onnxruntime-web); the MLC builds run through WebLLM. Every call has a
 // deterministic fallback, so the app works the same without WebGPU.
 
-import type { Task, State } from "../core/types";
+import type { AIMemoryMessage, Task, State } from "../core/types";
 import { SCHOOL } from "../core/types";
 import { addDays, fmtDate, fmtLocal, parseLocal, startOfDay } from "../core/time";
-import { fixedSpans } from "../core/schedule";
+import { fixedSpans, isPianoItem } from "../core/schedule";
 import { subjectFocus, type Focus } from "../core/grades";
-import { heuristicEstimate, intendedTools, workSignals, matchTasks, mergeCalls, ruleParse, TOOL_SPECS, validateCalls, type Estimate, type ToolCall, type ToolName } from "./heuristics";
+import { heuristicEstimate, workSignals, matchTasks, ruleParse, TOOL_SPECS, validateCalls, type Estimate, type ToolCall, type ToolName } from "./heuristics";
 
 export type Backend = "native" | "transformers" | "webllm";
 export interface ModelInfo {
@@ -102,6 +102,37 @@ export function salvageCalls(txt: string): unknown[] {
   return out;
 }
 
+/** Turn a prose reply that ignored the JSON-only instruction into something readable.
+ *  Models often open with "The student is asking…" and list the tasks back; that preamble
+ *  is noise, so drop it and keep the part that actually answers the question. */
+export function salvageProse(txt: string): string {
+  let t = txt.trim().replace(/^```(?:json|text)?\s*/i, "").replace(/\s*```$/, "").trim();
+  // Drop a leading JSON object the model half-wrote before switching to prose.
+  const brace = t.indexOf("{");
+  if (brace > 0 && brace < 40) t = t.slice(brace);
+  // Strip leading reasoning: models that ignore "JSON only" often narrate their thinking
+  // ("We need answer user. Need parse.") before the real answer. Drop those sentences.
+  // A sentence may contain a quoted question with its own "?", so allow quoted spans
+  // and match to the last terminator on the line rather than the first.
+  const SENT = String.raw`"?(?:[^.!?\n]|"[^"\n]*")*[.!?]["\']?\s*`;
+  const REASONING = new RegExp(`^(?:we|i)\\s+(?:need|should|must|will|can|have to|'ll)\\b${SENT}`, "i");
+  const META = new RegExp(`^(?:the\\s+)?(?:user|student)\\s+(?:is|was|asked|wants?)\\b${SENT}`, "i");
+  const PLANNING = new RegExp(`^(?:let me|so,?|okay,?|alright|first,?|next,?|now,?|hmm)\\b${SENT}`, "i");
+  // Subject-less reasoning fragments: "Need parse.", "Must check the plan."
+  const FRAGMENT = new RegExp(`^(?:need|must|should|have to|got ta|gotta|let's|maybe|probably|actually)\\b${SENT}`, "i");
+  for (let i = 0; i < 6; i++) {
+    const before = t;
+    t = t.replace(REASONING, "").replace(META, "").replace(PLANNING, "").replace(FRAGMENT, "").trim();
+    // A meta sentence can run into a second one ("…workload. They want to know…").
+    t = t.replace(/^(?:they|it)\s+(?:want|wants|need|needs|is|are|ask|asks)\b[^.!?\n]*[.!?]\s*/i, "");
+    if (t === before) break;
+  }
+  t = t.replace(/^["'\s]+|["'\s]+$/g, "").trim();
+  // If the model only restated the question or narrated, that is not an answer.
+  if (!t || REASONING.test(t) || META.test(t)) return "";
+  return t.slice(0, 6000);
+}
+
 export function parseJSONReply(txt: string): unknown {
   const end = txt.lastIndexOf("</think>");
   let t = end >= 0 ? txt.slice(end + 8) : txt.replace(/^\s*<think>[\s\S]*$/, "");
@@ -135,8 +166,9 @@ const shortDue = (iso: string | undefined, now: Date): string => {
 
 /** Today's and tomorrow's plan, each item tagged so the model knows what it may move:
  *  FIXED (school, meals, sleep, events), KEPT (pinned by the student), movable (placed by the planner). */
-export function planLines(state: State, now: Date, days = 4): string {
+export function planLines(state: State, now: Date, days = 7): string {
   const out: string[] = [];
+  const pianoTaskIds = new Set(state.tasks.filter(isPianoItem).map((t) => t.id));
   for (let i = 0; i < days; i++) {
     const day = addDays(startOfDay(now), i);
     const date = fmtDate(day);
@@ -147,7 +179,7 @@ export function planLines(state: State, now: Date, days = 4): string {
       items.push([a, `${a}-${z} ${f.title.replace(/ \(hard cutoff\)/, "")} FIXED`]);
     }
     for (const b of state.blocks) {
-      if (b.date !== date || parseLocal(b.end) <= now) continue;
+      if (b.date !== date || parseLocal(b.end) <= now || isPianoItem(b) || (b.task_id && pianoTaskIds.has(b.task_id))) continue;
       const name = b.kind === "bucket" ? `${b.bucket} goal` : (b.title.split(": ").slice(1).join(": ") || b.title).slice(0, 44);
       const tag = b.status === "done" ? "done" : b.locked ? "KEPT" : "movable";
       items.push([b.start.slice(11), `${b.start.slice(11)}-${b.end.slice(11)} ${name} ${tag}`]);
@@ -160,7 +192,7 @@ export function planLines(state: State, now: Date, days = 4): string {
 
 /** Context compression: the few tasks this message is about, plus the ones due soonest. */
 export function relevantTasks(state: State, text: string, now: Date, max = 7): string {
-  const open = state.tasks.filter((t) => t.status === "open");
+  const open = state.tasks.filter((t) => t.status === "open" && !isPianoItem(t));
   const picked = new Map<string, Task>();
   for (const t of matchTasks(text, open).slice(0, 3)) picked.set(t.id, t);
   for (const t of [...open].sort((a, b) => (a.due_at ?? "9").localeCompare(b.due_at ?? "9"))) {
@@ -170,25 +202,59 @@ export function relevantTasks(state: State, text: string, now: Date, max = 7): s
   return [...picked.values()].map((t) => `- ${t.course}: ${t.title} · due ${shortDue(t.due_at, now)} · ${t.human_minutes ?? t.estimated_minutes ?? "?"}m`).join("\n");
 }
 
+/** Longer-term milestones saved from chat; these remain visible to the model outside the Week view. */
+export function longRangeMilestones(state: State, now: Date, max = 12): string {
+  const afterWeek = addDays(startOfDay(now), 7);
+  return state.tasks
+    .filter((t) => t.source === "assistant" && t.status === "open" && !!t.due_at
+      && parseLocal(t.due_at) >= afterWeek && !isPianoItem(t))
+    .sort((a, b) => (a.due_at ?? "").localeCompare(b.due_at ?? ""))
+    .slice(0, max)
+    .map((t) => `- ${t.due_at!.slice(0, 10)} ${t.course}: ${t.title}${t.description ? ` — ${t.description.slice(0, 140)}` : ""}`)
+    .join("\n");
+}
+
 /** Instructions that don't change between messages. They come first and stay byte-identical,
  *  so the model's key/value cache for them is computed once and reused (prefix caching). */
 export function plannerSystem(state: State): string {
   const specs = (Object.keys(TOOL_SPECS) as ToolName[]).map((k) => `${k}(${TOOL_SPECS[k]})`).join("\n");
   const goals = state.buckets.filter((b) => b.key !== SCHOOL).map((b) => `${b.key} = ${b.name}`).join("; ");
-  return "You are a friendly study-planner assistant for a high-school junior. Turn the message into tool calls. " +
-    'Reply with JSON only: {"calls":[{"tool":"name","args":{...}}],"reply":"one short friendly sentence"}.\n' +
+  return "You are an organized study-planning and college-planning coach for this high-school junior; follow any correction the student gives about their grade. Turn the message into appropriate tool calls and a genuinely useful answer. " +
+    'Reply with JSON only: {"calls":[{"tool":"name","args":{...}}],"reply":"helpful answer"}.\n' +
+    "CRITICAL: You MUST use tool calls to make ANY changes to the schedule. Do not just reply with text saying you'll do something — you must emit the tool call.\n" +
+    "CRITICAL: Output the JSON object and nothing else. Never write your reasoning, never restate the question, never list the tasks back. If you are tempted to think out loud, put the finished answer in the reply field instead. A reply that begins with anything other than { is wrong.\n" +
     "Rules:\n" +
-    "- Dates are YYYY-MM-DD, times 24h HH:MM. Copy dates from the Dates line; never work out weekdays yourself.\n" +
+    "- Dates are YYYY-MM-DD, times 24h HH:MM. For the next 7 days copy dates from the Dates line. For farther horizons derive suggested target dates from Now and the student's stated goal; never present a calculated target as an official deadline.\n" +
     "- Evening words mean PM: \"7 tonight\" = 19:00, \"6:30 tonight\" = 18:30, \"4 to 6pm\" = 16:00-18:00.\n" +
-    "- Usually ONE call. Add a second only when the message asks for two things. Never add calls the student didn't ask for.\n" +
+    "- Usually ONE call. Use multiple calls only when the student asks for multiple changes or explicitly asks to save a roadmap's milestones (up to 8 add_task calls). Never add calls the student didn't ask for.\n" +
     "- After any change the planner re-plans everything else by itself. Only call tools for what the student asked to change.\n" +
     "- FIXED items (school, meals, sleep, events) and due dates never move. KEPT blocks stay where they are.\n" +
+    "- Use set_schedule for explicit requests to change school days/hours, dismissal overrides, commute, breaks, dinner, sleep cutoff, study windows (weekday, weekend or day-specific), rest days or block lengths. Include only settings the student asked to change; unspecified rules stay as-is.\n" +
+    "- Ignore all Piano-related tasks and events: do not schedule, estimate, move, mark done, pre-clear, or change them. They are outside this planner's scope.\n" +
+    "- ACT prep is extracurricular, not school coursework. Keep ACT work in the ACT goal; never treat it as a school assignment.\n" +
+    "- You can help plan from this week through several months or years. Week shows only its next 7 days; saved future milestones stay in Tasks and enter the Week plan as their due dates approach.\n" +
+    "- For college guidance, use known student context and give practical, prioritized steps. Ask for important missing details (target year, location, interests/major, affordability) instead of inventing them. Distinguish suggested targets from official deadlines; don't invent school-specific dates or guarantee admission. Don't claim to be the student's actual school counselor or an admissions officer.\n" +
+    "- If the student asks for advice or a roadmap, give a detailed, structured reply with useful headings, concrete steps/date ranges, assumptions, and an immediate next step. Use plain text, line breaks and hyphen bullets (no Markdown tables). For simple actions or factual questions, stay concise. Never claim an action succeeded unless its tool call did.\n" +
+    "- Use add_task only when explicitly asked to save/add/track milestones. For college items use course \"College Planning\", a valid YYYY-MM-DD due_date, and label suggested dates as suggested in description; do not present them as official deadlines.\n" +
     "- \"keep\", \"don't move\", \"leave X\" -> keep_block X. \"move\" or \"push\" X -> move_block X and nothing else.\n" +
     "- A new appointment or activity -> add_event. \"Keep everything else the same\" needs no extra calls.\n" +
     "- Practices, banquets, concerts, meetings -> add_event. \"Finish X before TIME\" -> preclear_task. Focus sessions -> timer.\n" +
     "- Questions about grades, assignments or announcements -> ask_canvas.\n" +
     "- A grade goal (\"I want an A in chem\", \"get precalc to 95\") -> set_grade_target with the percent (A=93, A-=90, B+=87).\n" +
     "- Never invent email addresses; use a role like 'counselor'.\n" +
+    "SCHEDULE EDITING EXAMPLES:\n" +
+    "- \"Move my AIME block to Saturday afternoon\" -> move_block with target=\"AIME\", to_date=Saturday's date, window=\"afternoon\"\n" +
+    "- \"I have a banquet at 7 tonight\" -> add_event with title=\"Banquet\", date=today, start=\"19:00\", end=\"21:00\"\n" +
+    "- \"Cancel study after 8pm\" -> cancel_study with date=today, after=\"20:00\"\n" +
+    "- \"Do the physics lab on Saturday morning\" -> schedule_task with task_query=\"physics lab\", date=Saturday, window=\"morning\"\n" +
+    "- \"Chem before calc tonight\" -> order_blocks with first=\"chem\", then=\"calc\", date=today\n" +
+    "- \"Keep my research block where it is\" -> keep_block with target=\"RESEARCH\"\n" +
+    "- \"I want an A in chemistry\" -> set_grade_target with course=\"Chemistry\", target=93\n" +
+    "- \"My chemistry exam is on the 24th, worth 40%\" -> add_exam with course, date, weight; the planner ramps study before it\n" +
+    "- \"This week is all about the AIME\" -> set_weekly_focus with that focus\n" +
+    "- \"Clear my whole Tuesday\" -> clear_day with that date\n" +
+    "- \"Make the essay top priority\" / \"this can wait\" -> set_priority with priority high or low\n" +
+    "- \"Why is my week like this?\" / \"explain my plan\" -> explain_plan, then answer in the reply\n" +
     `Goals (use the key): ${goals}\n` +
     `Tools:\n${specs}`;
 }
@@ -196,7 +262,7 @@ export function plannerSystem(state: State): string {
 /** Output shape for the planner. WebLLM enforces it while decoding (only real tool names can come out). */
 /** One short line of grades for the model, weakest first: "Chemistry H 84% B ▼3 (goal 93, focus)". */
 export function gradeLine(state: State, now: Date, max = 5): string {
-  return subjectFocus(state, now).slice(0, max).map((f) =>
+  return subjectFocus(state, now).filter((f) => !/\bpiano\b/i.test(f.course)).slice(0, max).map((f) =>
     `${f.course} ${f.score}%${f.trend ? ` ${f.trend > 0 ? "▲" : "▼"}${Math.abs(f.trend)}` : ""}${f.level === "focus" || f.level === "watch" ? ` (goal ${f.target}, ${f.level})` : ""}`).join("; ");
 }
 
@@ -212,7 +278,7 @@ export const ESTIMATE_SCHEMA = {
 export const PLANNER_SCHEMA = {
   type: "object",
   properties: {
-    calls: { type: "array", maxItems: 4, items: { type: "object", properties: {
+    calls: { type: "array", maxItems: 8, items: { type: "object", properties: {
       tool: { type: "string", enum: Object.keys(TOOL_SPECS) }, args: { type: "object" } }, required: ["tool", "args"] } },
     reply: { type: "string" },
   },
@@ -310,10 +376,14 @@ export class LLMClient {
   /** Last model thinking/reasoning trace (from <think> tags or OpenRouter reasoning). */
   lastThinking = "";
   /** Preserved conversation turns across messages and model switches. */
-  chatHistory: Array<{ role: "user" | "assistant"; content: string }> = (() => {
+  chatHistory: AIMemoryMessage[] = (() => {
     try {
       const raw = sessionStorage.getItem("studyflow_chat_history");
-      return raw ? JSON.parse(raw) : [];
+      const parsed = raw ? JSON.parse(raw) as unknown : [];
+      return Array.isArray(parsed)
+        ? parsed.filter((m): m is AIMemoryMessage => !!m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+          .slice(-16).map((m) => ({ role: m.role, content: m.content.slice(0, 3000) }))
+        : [];
     } catch { return []; }
   })();
   /** Prompt size of the last call in tokens (0 if the backend doesn't report it). */
@@ -324,9 +394,19 @@ export class LLMClient {
     try { sessionStorage.removeItem("studyflow_chat_history"); } catch { /* ignore */ }
   }
 
+  restoreHistory(memory: AIMemoryMessage[] | undefined): void {
+    if (memory === undefined) return;
+    this.chatHistory = memory
+      .filter((m) => !!m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+      .slice(-16)
+      .map((m) => ({ role: m.role, content: m.content.slice(0, 3000) }));
+    try { sessionStorage.removeItem("studyflow_chat_history"); } catch { /* ignore */ }
+  }
+
   private saveHistory(): void {
     if (this.chatHistory.length > 16) this.chatHistory = this.chatHistory.slice(-16);
-    try { sessionStorage.setItem("studyflow_chat_history", JSON.stringify(this.chatHistory)); } catch { /* ignore */ }
+    this.chatHistory = this.chatHistory.map((m) => ({ role: m.role, content: m.content.slice(0, 3000) }));
+    try { sessionStorage.removeItem("studyflow_chat_history"); } catch { /* ignore */ }
   }
 
   constructor(onChange: (s: LLMStatus) => void = () => {}) { this.onChange = onChange; }
@@ -395,7 +475,11 @@ export class LLMClient {
           if (opts.token) headers["X-Relay-Token"] = opts.token;
           const r = await fetch("/api/llm/chat", { method: "POST", headers, body: JSON.stringify(request) });
           const d = await r.json().catch(() => ({})) as { content?: string; reasoning?: string; error?: string };
-          if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+          if (!r.ok) {
+            // 429 means the free tier is throttled, not that the app is broken — say so plainly.
+            if (r.status === 429) throw new Error("Rate limited by the model provider. Wait a few seconds and retry, or switch to another model in Settings → Connections.");
+            throw new Error(d.error || `HTTP ${r.status}`);
+          }
           const reasoning = String(d.reasoning ?? "").trim();
           const content = String(d.content ?? "");
           // carry reasoning inline (per call) so concurrent background calls can't overwrite it
@@ -507,7 +591,7 @@ export class LLMClient {
     const h = heuristicEstimate(t);
     if (!this.ready) return h;
     // the student's own corrected times, same course first, as calibration examples
-    const past = history.filter((x) => x.id !== t.id && x.human_minutes != null)
+    const past = history.filter((x) => x.id !== t.id && !isPianoItem(x) && x.human_minutes != null)
       .sort((a, b) => Number(b.course === t.course) - Number(a.course === t.course)).slice(0, 4);
     const cmts = (t.comments ?? []).join(" | ");
     const key = `${t.course}|${t.title}|${t.category}|${t.points ?? ""}|${(t.description ?? "").slice(0, 120)}|${cmts.slice(0, 80)}|${past.map((x) => x.human_minutes).join(",")}`;
@@ -543,8 +627,10 @@ export class LLMClient {
     } catch { return h; }
   }
 
-  /** Turn a chat/voice message into tool calls plus a short spoken-style reply. */
-  /** `calls` is what the app runs (rules + checked model calls); `modelCalls` is the model alone, after the intent check. */
+  /** Turn a chat/voice message into tool calls plus a short spoken-style reply.
+   *  The AI is the primary parser: every message goes to the model when one is loaded.
+   *  Rules are only a safety net when the model is unavailable, errors, or returns nothing usable. */
+  /** `calls` is what the app runs; `modelCalls` is the model alone. */
   async command(text: string, state: State, now: Date, opts: { fallback?: boolean } = {}): Promise<{ calls: ToolCall[]; modelCalls: ToolCall[]; reply: string; thinking: string; via: "llm" | "rules" }> {
     const fallback = opts.fallback ?? true;
     const rules = fallback ? ruleParse(text, now, state.buckets) : [];
@@ -553,37 +639,46 @@ export class LLMClient {
       const fixed = plannerSystem(state);
       const bucketSummary = state.buckets.filter((b) => b.key !== SCHOOL).map((b) => `${b.key} ${Math.round(b.logged_minutes / 60 * 10) / 10}/${b.target_hours}h`).join(", ");
       const rulesSummary = `${state.rules.block_min}m blocks, ${state.rules.break_min}m breaks, dinner ${state.rules.dinner_start} (${state.rules.dinner_min}m), sleep ${state.rules.sleep_cutoff}`;
+      const savedMilestones = longRangeMilestones(state, now);
       const context = `\n\nBackground (only to look up names, dates and what may move; act ONLY on the student's message):\n` +
         `Now: ${now.toLocaleDateString("en-US", { weekday: "short" })} ${fmtDate(now)} ${now.toTimeString().slice(0, 5)}\n` +
         `Dates: ${weekLine(now)}\n` +
         `Rules: ${rulesSummary}\n` +
         (bucketSummary ? `Buckets: ${bucketSummary}\n` : "") +
-        `Plan:\n${planLines(state, now, 4)}\n` +
-        `Open tasks:\n${relevantTasks(state, text, now, 12) || "(none)"}` +
-        ((state.grades ?? []).length ? `\nGrades (weakest first): ${gradeLine(state, now)}` : "") +
-        ((state.flags ?? []).some((f) => f.status !== "dismissed") ? `\nZeros/missing: ${(state.flags ?? []).filter((f) => f.status !== "dismissed").slice(0, 4).map((f) => `${f.course}: ${f.title} (${f.kind === "zero" ? `0/${f.points}` : "missing"}${f.status === "planned" ? ", make-up planned" : ""})`).join("; ")}` : "");
-      const res = await this.jsonCall(fixed + context, text, 400, fixed, PLANNER_SCHEMA, this.chatHistory.slice(-8));
+        `Plan (same next 7 days shown in the Week calendar):\n${planLines(state, now, 7)}\n` +
+        `Open tasks:\n${relevantTasks(state, text, now, 15) || "(none)"}` +
+        (savedMilestones ? `\nSaved long-range milestones:\n${savedMilestones}` : "") +
+        ((state.grades ?? []).some((g) => !/\bpiano\b/i.test(g.course)) ? `\nGrades (weakest first): ${gradeLine(state, now)}` : "") +
+        ((state.flags ?? []).some((f) => f.status !== "dismissed" && !/\bpiano\b/i.test(`${f.course} ${f.title}`))
+          ? `\nZeros/missing: ${(state.flags ?? []).filter((f) => f.status !== "dismissed" && !/\bpiano\b/i.test(`${f.course} ${f.title}`)).slice(0, 4).map((f) => `${f.course}: ${f.title} (${f.kind === "zero" ? `0/${f.points}` : "missing"}${f.status === "planned" ? ", make-up planned" : ""})`).join("; ")}` : "") +
+        // Add current timer state if running
+        (state.timer.state !== "idle" ? `\nActive timer: ${state.timer.bucket ?? "Study"} ${state.timer.planned_min ? `(${state.timer.planned_min} min planned)` : ""}` : "") +
+        // Add momentum mode
+        (state.momentum ? `\nCurrent workload mode: ${state.momentum.mode}` : "");
+      const detailed = /\b(plan|planning|roadmap|timeline|colleges?|applications?|admissions?|career|months?|years?|long[- ]term|explain|compare|financial aid|scholarship|future|guidance|advice|what should|how can)\b/i.test(text);
+      // Send more history for better context (12 turns instead of 6)
+      const historyForModel = this.chatHistory.slice(-12);
+      const res = await this.jsonCall(fixed + context, text, detailed ? 1800 : 900, fixed, PLANNER_SCHEMA, historyForModel);
       const j = res.value as { calls?: unknown; reply?: unknown } | null;
       let raw = validateCalls(j?.calls ?? []);
       if (!raw.length) raw = validateCalls(salvageCalls(res.raw));
-      // Cloud/relay models are smart enough to trust; the regex intent gate is only for tiny in-browser models.
-      const trusted = this.status.model === "native";
-      const want = intendedTools(text);
-      const modelCalls = trusted ? raw : raw.filter((c) => want.has(c.tool));
-      let reply = typeof j?.reply === "string" ? j.reply.slice(0, 600) : "";
-      if (!reply && !modelCalls.length && res.raw) {
+      let reply = typeof j?.reply === "string" ? j.reply.slice(0, 6000) : "";
+      if (!reply && res.raw) {
+        // The model ignored "JSON only" and wrote prose. That prose is still the answer —
+        // salvage it instead of showing the student a canned "I didn't catch that".
         const cleaned = res.raw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-        if (cleaned && !cleaned.startsWith("{")) reply = cleaned.slice(0, 600);
+        if (cleaned && !cleaned.startsWith("{")) reply = salvageProse(cleaned);
       }
-      const calls = trusted
-        ? (modelCalls.length ? modelCalls.slice(0, 4) : rules)
-        : mergeCalls(modelCalls, rules, text);
+      // The model is the only parser. Rules are used ONLY when no model is loaded or the call throws —
+      // never merged into a model turn, so what the AI decided is exactly what runs.
+      const modelCalls = raw.slice(0, 8);
+      const calls = modelCalls;
       this.chatHistory.push({ role: "user", content: text });
       if (reply || calls.length) {
-        this.chatHistory.push({ role: "assistant", content: reply || calls.map((c) => c.tool).join(", ") });
+        this.chatHistory.push({ role: "assistant", content: (reply || calls.map((c) => c.tool).join(", ")).slice(0, 3000) });
       }
       this.saveHistory();
-      return { calls, modelCalls, reply, thinking: res.thinking, via: calls.some((c) => modelCalls.includes(c)) ? "llm" : "rules" };
+      return { calls, modelCalls, reply, thinking: res.thinking, via: reply || modelCalls.length ? "llm" : "rules" };
     } catch (e) {
       return { calls: rules, modelCalls: [], reply: rules.length ? "" : `AI error: ${String((e as Error).message ?? e).slice(0, 200)}`, thinking: "", via: "rules" };
     }
@@ -593,9 +688,10 @@ export class LLMClient {
   async summarize(question: string, data: unknown): Promise<string> {
     if (!this.ready) return "";
     try {
-      const j = (await this.json("Answer the student's question in at most 3 short sentences using only this data. " +
-        'Reply as JSON {"answer":"..."}.', `Question: ${question}\nData: ${compactData(data).slice(0, 2400)}`, 220)) as { answer?: string } | null;
-      return typeof j?.answer === "string" ? j.answer : "";
+      const j = (await this.json("Answer the student's question clearly and with enough detail to be useful, using only this data. " +
+        "Include relevant dates and key items; use short bullets if there are several. Do not infer facts missing from the data. " +
+        'Reply as JSON {"answer":"..."}.', `Question: ${question}\nData: ${compactData(data).slice(0, 2400)}`, 500)) as { answer?: string } | null;
+      return typeof j?.answer === "string" ? j.answer.slice(0, 3000) : "";
     } catch { return ""; }
   }
 

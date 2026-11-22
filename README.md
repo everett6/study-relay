@@ -129,12 +129,36 @@ Exposes **20 tools**, **4 resources** (`study://schedule/today`, `study://tasks/
   ./install-desktop-app.sh   # installs "Study Flow" to ~/.local/share/applications/
   ```
   Env vars for native local inference: `LOCAL_LLM_URL` (default `http://127.0.0.1:11434/v1`), `LOCAL_LLM_MODEL` (default `lfm2.5`), `LOCAL_LLM_CTX` (default `32768`), `LOCAL_LLM_API_KEY`. For gpt-6-luna through OpenRouter use URL `https://openrouter.ai/api/v1`, model `openai/gpt-6-luna` and your OpenRouter key (`OPENROUTER_API_KEY` also works).
-- **Connection setup:** Settings → Connect services separates Email, Discord, Canvas, and AI model provider settings. Choose OpenRouter, OpenAI, Azure OpenAI, or Local/custom under AI. API keys are saved to the relay server's `.env` file with mode `0600`; blank key fields keep the saved key, and provider keys are stored separately. The browser only receives whether a key is configured, never the key itself.
+- **Connection setup:** Settings → Connect services separates Email, Discord, Canvas, and AI model provider settings. Choose OpenRouter, OpenAI, Azure OpenAI, or Local/custom under AI. OpenRouter loads the current zero-price text model catalog and ranks every result by planner tool/JSON support, reported Artificial Analysis intelligence score, reasoning support, and context size. Free-tier availability and rate limits can change. GPT-6 Luna remains a quick pick. Selecting a model changes only its ID; saving settings switches the relay to that model without replacing a saved key. API keys are saved to the relay server's `.env` file with mode `0600`; blank key fields keep the saved key, and provider keys are stored separately. The browser only receives whether a key is configured, never the key itself.
+- **Persistent AI memory:** The latest 16 conversation messages are stored in the relay-synced planner state. The latest 6 messages are sent with each Ask request to the selected model/provider. Use **Clear context** in the activity panel to erase the stored memory.
+- **AI schedule control:** The connected model is the primary parser for every Ask message — it decides which tools to call, so natural phrasing works without matching a keyword list. Ask it to add or move events and study blocks, set weekly goal hours, pin or reschedule assignments, or explicitly change routine settings such as school days/hours, dismissal times, commute, breaks, dinner, sleep cutoff, study windows, and rest days. Routine changes are validated and the plan is rebuilt around the updated rules; settings not mentioned in the request stay unchanged. The model is the **only** parser: when a model is loaded, exactly the calls it emitted run — rule calls are never merged into a model turn. The built-in rule parser is used only when no model is loaded or the request throws. On startup the relay model is preferred, so a saved in-browser model is used only when the relay is unreachable. Every AI turn can be undone in one click from the answer panel. Free-tier rate limits (HTTP 429) and transient provider errors are retried with backoff, honoring `Retry-After`, and a persistent limit is reported as a rate limit rather than a failure. Piano tasks and events are excluded from planning and model edits. ACT prep stays extracurricular.
+- **Expanded tools:** Alongside events, blocks, goals and routine settings, the model can add an exam (with grade weight, which ramps study before it), set a weekly focus, clear a whole day, change a task's priority (high pulls work forward, low yields), and explain why the plan looks the way it does.
+- **College planning:** Ask the AI for a detailed college-prep roadmap across months or years. If you explicitly ask it to save milestones, they appear as dated College Planning tasks; the Week calendar only shows the next 7 days, and future milestones enter it as their dates approach. Suggested dates are labeled as targets to verify, not official deadlines.
 - **Docker / VPS hosting:**
   ```bash
   docker compose up -d --build
   ```
   Institutional endpoints: `/api/presets`, `/api/presets/apply`, `/api/counselor/digest`, `/api/report/transcript`, `/api/export/json`, `/api/export/csv`, `/api/audit`, `/api/account/reset`.
+
+## Benchmarking the AI
+
+Two benchmarks grade the model, not just its tool names:
+
+- **`web/bench/run-live.ts`** — the model you actually use (relay / OpenRouter / local). It runs each message through the real engine and grades the **resulting calendar**, plus whether answers are grounded in real state.
+- **`bench/run_bench.py`** — in-browser WebGPU models, headless Chromium.
+
+```bash
+cd web && npx tsx bench/run-live.ts                       # relay on 127.0.0.1:8000
+RELAY=http://raspberrypi.local:8000 RELAY_TOKEN=… npx tsx bench/run-live.ts
+```
+
+It prints a per-case PASS/FAIL with the tools used, then a score:
+
+```
+SCORE  schedule 14/14  context 4/4  overall 18/18 (100%)
+```
+
+Schedule cases assert the effect on the plan (a block is gone, an event exists and nothing overlaps it, a goal moved to Saturday). Context cases assert the reply names real tasks, goals, or durations instead of inventing them. Self-improvement is covered by four cases: raising the weekly goal, moving its block, removing one block, and everyday phrasing like "journaling and self care".
 
 ## Smart AI (optional)
 
@@ -149,11 +173,13 @@ Models with a reasoning mode get a "think before answering" switch. Each model d
 
 How the model is kept fast and small:
 
-- **Context compression.** The planner prompt carries only today's and tomorrow's plan, the few tasks the message is about plus the ones due soonest, and short tool specs. Canvas data is stripped of ids, URLs and HTML before it reaches a prompt.
+- **Context compression.** The planner prompt carries the same next 7 days shown in the Week calendar, the few tasks the message is about plus the ones due soonest, and short tool specs. Canvas data is stripped of ids, URLs and HTML before it reaches a prompt.
 - **Prefix KV caching.** The instructions are identical for every message, so their key/value state is computed once and reused; only the new part of each prompt is processed. WebLLM does the same on its own, and its KV cache is capped at 3K tokens.
 - **Weights** are 4-bit. LFM3's hybrid design (conv layers, sliding-window attention) keeps its KV cache small to begin with.
 
 The model sees each block tagged **FIXED** (school, meals, sleep, events), **KEPT** (you pinned it) or **movable**. "Keep my AIME block" pins it (`keep_block`); "move research to Saturday" moves just that one thing (`move_block`). Any change, from chat, a drag, a Canvas sync, Settings or Claude over MCP, re-plans everything else around it.
+
+After each Ask-bar response, **Activity trace** shows which model or rules handled the request, what actions were selected, and their outcomes. This is an auditable action summary, not hidden model chain-of-thought.
 
 Without a model, the rule parser and heuristic estimator handle everything, so the app works on any browser. `bench/run_bench.py` compares models on a fixed set of commands.
 

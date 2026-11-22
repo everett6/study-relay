@@ -1,11 +1,11 @@
 // Fixed benchmark for the in-browser models. Answers were written before any model ran.
 // "Now" is Thursday 2026-11-19 15:00 (local), with the ESUHSD demo assignments loaded.
-import { defaultState, type State } from "../src/core/types";
+import { defaultState, type Block, type State } from "../src/core/types";
 import { mockESUHSD } from "../src/core/canvas";
 import { Store } from "../src/core/store";
-import { Engine } from "../src/app/engine";
+import { Engine, planKey } from "../src/app/engine";
 import { LLMClient } from "../src/ai/llmClient";
-import { applyEstimate, heuristicEstimate, matchTasks, resolveBucket, type ToolCall } from "../src/ai/heuristics";
+import { applyEstimate, heuristicEstimate, matchTasks, resolveBucket, BUCKET_ALIASES, type ToolCall } from "../src/ai/heuristics";
 
 export const NOW = new Date(2026, 10, 19, 15, 0);
 const TODAY = "2026-11-19", FRI = "2026-11-20", SAT = "2026-11-21", SUN = "2026-11-22";
@@ -23,6 +23,38 @@ export function buildPlannedState(): State {
   new Engine(store, new LLMClient(), () => NOW);
   store.update((st) => { st.tasks = buildState().tasks; });
   return store.state;
+}
+
+/** Deterministic plan for the effect benchmark: known goal blocks on known days, so a case
+ *  can assert "the AIME block is gone" without depending on what the planner happened to place. */
+export function buildBenchState(): State {
+  // Build the plan first (so task blocks are realistic), then overwrite the goal blocks directly.
+  // Setting state directly avoids the store's re-plan hook wiping the seeded blocks.
+  const store = new Store(null, false);
+  store.state = defaultState();
+  new Engine(store, new LLMClient(), () => NOW);
+  store.update((st) => { st.tasks = buildState().tasks; });
+  const st = store.state;
+  st.grades = [
+    { course: "AP Chemistry", score: 84, grade: "B", target: 93, history: [], updated: "2026-11-19T15:00" },
+    { course: "AP Calculus BC", score: 91, grade: "A-", target: 93, history: [], updated: "2026-11-19T15:00" },
+  ];
+  const goal = (id: string, date: string, start: string, end: string, bucket: string, title: string): Block => ({
+    id, date, start: `${date}T${start}`, end: `${date}T${end}`, kind: "bucket", bucket, title,
+    load: 4, quiet: false, locked: false, status: "planned",
+  });
+  st.blocks = [
+    ...st.blocks.filter((b) => b.kind === "task"),
+    goal("bench-aime", TODAY, "16:15", "17:00", "AIME", "AIME (Competition Math)"),
+    goal("bench-research", TODAY, "17:10", "17:55", "RESEARCH", "ISEF / Synopsys Research"),
+    goal("bench-act", FRI, "16:15", "17:00", "ACT", "ACT Prep"),
+    goal("bench-usaaio", SAT, "09:00", "09:45", "USAAIO", "USAAIO (AI Olympiad)"),
+    goal("bench-self", SUN, "10:00", "10:45", "SELF", "Self-improvement"),
+  ];
+  // Mark the plan as current so the first store mutation (e.g. saving AI memory) doesn't
+  // trigger a replan that would wipe the seeded blocks.
+  st.meta.plan_key = planKey(st);
+  return st;
 }
 
 type A = Record<string, unknown>;
@@ -132,4 +164,159 @@ export const ASSIGN_CASES: Case[] = [
     check: (c, s) => has(c, "order_blocks", (a) => taskIs(s, a.first, "canvas-9001") && taskIs(s, a.then, "canvas-9003")) },
   { text: "work on the moment of inertia lab tomorrow afternoon", expect: "schedule_task Lab 4 Fri afternoon",
     check: (c, s) => has(c, "schedule_task", (a) => taskIs(s, a.task_query, "canvas-9002") && a.date === FRI && str(a.window) === "afternoon") },
+];
+
+// ------------------------------------------------------------------ schedule editing & context understanding
+// These grade the *effect on the plan*, not just the tool name: a call only passes if the
+// resulting calendar actually matches what the student asked for.
+
+export interface EffectCase {
+  text: string;
+  expect: string;
+  /** Runs the model's calls through the real engine, then checks the resulting state. */
+  check: (after: State, before: State) => boolean;
+}
+
+const hasEvent = (s: State, title: RegExp, date?: string) =>
+  s.events.some((e) => e.kind === "event" && title.test(e.title) && (!date || e.start.startsWith(date)));
+
+export const EFFECT_CASES: EffectCase[] = [
+  {
+    text: "remove my AIME block tonight",
+    expect: "AIME block gone from today, other goals untouched",
+    check: (after, before) => {
+      const aimeBefore = before.blocks.filter((b) => b.date === TODAY && b.kind === "bucket" && b.bucket === "AIME").length;
+      const aimeAfter = after.blocks.filter((b) => b.date === TODAY && b.kind === "bucket" && b.bucket === "AIME").length;
+      return aimeBefore > 0 && aimeAfter < aimeBefore;
+    },
+  },
+  {
+    text: "drop the research session tonight",
+    expect: "RESEARCH block removed, USAAIO still planned",
+    check: (after, before) => {
+      const researchBefore = before.blocks.filter((b) => b.date === TODAY && b.bucket === "RESEARCH").length;
+      const researchAfter = after.blocks.filter((b) => b.date === TODAY && b.bucket === "RESEARCH").length;
+      return researchBefore > 0 && researchAfter < researchBefore;
+    },
+  },
+  {
+    text: "I have a banquet at 7 tonight",
+    expect: "event exists 19:00-21:00 and no study block overlaps it",
+    check: (after) => {
+      if (!hasEvent(after, /banquet/i, TODAY)) return false;
+      return !after.blocks.some((b) => b.status === "planned" && b.date === TODAY
+        && b.start < `${TODAY}T21:00` && b.end > `${TODAY}T19:00`);
+    },
+  },
+  {
+    text: "move my ACT prep to saturday morning",
+    expect: "ACT block lands on Saturday before noon",
+    check: (after) => after.blocks.some((b) => b.status === "planned" && b.bucket === "ACT" && b.date === SAT && b.start.slice(11) < "12:00"),
+  },
+  {
+    text: "no more studying tonight after 8",
+    expect: "no planned study block ends after 20:00 today",
+    check: (after) => !after.blocks.some((b) => b.status === "planned" && b.date === TODAY && b.end.slice(11) > "20:00"),
+  },
+  {
+    text: "keep my AIME block tonight but move research to saturday afternoon",
+    expect: "AIME locked in place, RESEARCH moved to Saturday afternoon",
+    check: (after) => {
+      const aime = after.blocks.find((b) => b.status === "planned" && b.bucket === "AIME" && b.date === TODAY);
+      const research = after.blocks.find((b) => b.status === "planned" && b.bucket === "RESEARCH" && b.date === SAT);
+      return !!aime?.locked && !!research && research.start.slice(11) >= "12:00";
+    },
+  },
+  {
+    text: "bump AIME to 8 hours a week",
+    expect: "AIME target is 8h",
+    check: (after) => after.buckets.find((b) => b.key === "AIME")?.target_hours === 8,
+  },
+  {
+    text: "I want an A in chemistry",
+    expect: "chemistry grade target set to 93",
+    check: (after) => (after.grades ?? []).some((g) => /chem/i.test(g.course) && g.target === 93),
+  },
+  {
+    text: "school starts at 9 tomorrow",
+    expect: "school_start rule is 09:00",
+    check: (after) => after.rules.school_start === "09:00",
+  },
+  {
+    text: "I already turned in the stoichiometry quiz",
+    expect: "that task is marked done",
+    check: (after) => after.tasks.some((t) => /stoich/i.test(t.title) && t.status === "done"),
+  },
+  {
+    text: "bump my self improvement goal to 4 hours a week",
+    expect: "SELF target is 4h",
+    check: (after) => after.buckets.find((b) => b.key === "SELF")?.target_hours === 4,
+  },
+  {
+    text: "move my self improvement block to sunday afternoon",
+    expect: "SELF block lands on Sunday after noon",
+    check: (after) => after.blocks.some((b) => b.status === "planned" && b.bucket === "SELF" && b.date === SUN && b.start.slice(11) >= "12:00"),
+  },
+  {
+    text: "remove my self improvement block on sunday",
+    expect: "the Sunday SELF block is gone (the weekly goal may re-place it elsewhere)",
+    check: (after) => !after.blocks.some((b) => b.status === "planned" && b.bucket === "SELF" && b.date === SUN),
+  },
+  {
+    text: "I want more time for journaling and self care",
+    expect: "SELF goal raised above its 2h default",
+    check: (after) => (after.buckets.find((b) => b.key === "SELF")?.target_hours ?? 0) > 2,
+  },
+];
+
+/** Context-understanding probes: the answer must reflect real state, not invented facts. */
+export interface ContextCase {
+  text: string;
+  expect: string;
+  /** true when the reply is grounded in the actual plan. */
+  check: (reply: string, state: State) => boolean;
+}
+
+export const CONTEXT_CASES: ContextCase[] = [
+  {
+    text: "what's on my plan tonight?",
+    expect: "mentions a real block or goal from today's plan",
+    check: (reply, s) => {
+      const names = s.blocks.filter((b) => b.date === TODAY && b.status === "planned")
+        .map((b) => (b.kind === "bucket" ? b.bucket : b.title.split(": ").slice(1).join(": ")));
+      return names.some((n) => n && reply.toLowerCase().includes(n.toLowerCase().slice(0, 8)));
+    },
+  },
+  {
+    text: "what's due tomorrow?",
+    expect: "names a task actually due tomorrow",
+    // Accept any distinctive word from a task due that day — models paraphrase titles,
+    // so matching the first 10 characters verbatim fails on correct answers.
+    check: (reply, s) => {
+      const due = s.tasks.filter((t) => t.status === "open" && t.due_at?.startsWith(FRI));
+      const words = (x: string) => x.toLowerCase().match(/[a-z0-9]{4,}/g) ?? [];
+      const said = new Set(words(reply));
+      return due.some((t) => {
+        const w = words(t.title);
+        return w.length > 0 && w.filter((x) => said.has(x)).length >= Math.min(2, w.length);
+      });
+    },
+  },
+  {
+    text: "how much work do I have left this week?",
+    expect: "gives a duration or count, not a refusal",
+    check: (reply) => /\d+\s*(min|minute|hour|hr|h\b|task|assignment)/i.test(reply),
+  },
+  {
+    text: "what are my weekly goals?",
+    expect: "names at least two real goal keys",
+    // The model may answer with bucket names ("competition math") instead of keys ("AIME"),
+    // so accept either the key or any alias for it.
+    check: (reply, s) => {
+      const up = reply.toUpperCase();
+      return s.buckets.filter((b) => b.key !== "SCHOOL").filter((b) =>
+        up.includes(b.key) || (BUCKET_ALIASES[b.key] ?? []).some((a) => up.includes(a.toUpperCase())),
+      ).length >= 2;
+    },
+  },
 ];

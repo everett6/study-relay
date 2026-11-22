@@ -2,7 +2,7 @@
 // rule-based command parser that emits the same tool calls the LLM is asked for.
 
 import { targetFrom } from "../core/grades";
-import type { Bucket, Category, Task, TaskType } from "../core/types";
+import type { Bucket, Category, Rules, Task, TaskType } from "../core/types";
 import { addDays, fmtDate } from "../core/time";
 import { splitChunks } from "../core/schedule";
 
@@ -93,19 +93,23 @@ export function applyEstimate(t: Task, e: Estimate, blockMin = 45, minBlock = 20
 // ------------------------------------------------------------------ commands
 export type ToolName = "add_event" | "preclear_task" | "cancel_study" | "set_bucket_target" | "move_block"
   | "set_estimate" | "set_load" | "mark_done" | "ask_canvas" | "timer" | "draft_email" | "check_in" | "keep_block"
-  | "schedule_task" | "order_blocks" | "set_grade_target";
+  | "schedule_task" | "order_blocks" | "set_grade_target" | "set_schedule" | "add_task" | "remove_block"
+  | "add_exam" | "set_weekly_focus" | "clear_day" | "set_priority" | "explain_plan";
 export interface ToolCall { tool: ToolName; args: Record<string, unknown> }
 
 export const TOOL_SPECS: Record<ToolName, string> = {
   add_event: "title:string, date:YYYY-MM-DD, start:HH:MM, end:HH:MM|null — scheduled event (banquet, practice, concert, meeting); pre-clears Tier 1 work due by tomorrow",
   preclear_task: "task_query:string, date:YYYY-MM-DD, before:HH:MM",
   cancel_study: "date:YYYY-MM-DD, after:HH:MM|null — drop study blocks until the sleep cutoff",
-  set_bucket_target: "bucket:AIME|USAAIO|RESEARCH|ACT|PHYSICS, hours:number",
-  move_block: "target:string (bucket key or task words), to_date:YYYY-MM-DD, window:morning|afternoon|evening — move ONE thing; the rest re-plans itself",
+  set_bucket_target: "bucket:AIME|USAAIO|RESEARCH|ACT|PHYSICS|SELF, hours:number",
+  move_block: "target:string (bucket key or task words), from_date:YYYY-MM-DD|null, to_date:YYYY-MM-DD, window:morning|afternoon|evening — move an existing calendar block; the rest re-plans itself",
   schedule_task: "task_query:string, date:YYYY-MM-DD, window:morning|afternoon|evening|null — put ALL remaining work for one assignment on that day (\"do the essay on Saturday\")",
   order_blocks: "first:string, then:string, date:YYYY-MM-DD|null — reorder two blocks on a day so `first` comes before `then` (\"chem before calc tonight\")",
   set_grade_target: "course:string, target:number(percent)|null — the grade the student wants in a class; the planner gives below-goal classes more time and weekly review (\"I want an A in chem\", \"get precalc to 95\")",
+  set_schedule: "one or more of school_days:number[] (1=Mon..7=Sun), school_start:HH:MM, school_end:HH:MM, school_end_by_day:object{weekday:HH:MM}, commute_min:number, after_school_min:number, dinner_start:HH:MM, dinner_min:number, sleep_cutoff:HH:MM, weekend_start:HH:MM, block_min:number, break_min:number, min_block_min:number, preclear_hours:number, event_prep_min:number, rest_days:number[], quiet_weekday:string[], quiet_weekend:string[], quiet_by_day:object{weekday:string[]} — change only explicitly requested settings; preserve the rest and re-plan",
+  add_task: "title:string, due_date:YYYY-MM-DD, description:string|null, estimated_minutes:int|null, course:string|null — save a dated milestone; use College Planning for college milestones",
   keep_block: "target:string (bucket key or task words), date:YYYY-MM-DD|null — pin it where it is so re-planning never moves it (\"keep\", \"don't move\", \"leave\")",
+  remove_block: "target:string (bucket key or task words), date:YYYY-MM-DD|null — delete ONE specific study block from the calendar (\"remove my AIME block\", \"drop the research session tonight\"); the rest re-plans around it",
   set_estimate: "task_query:string, minutes:int",
   set_load: "task_query:string, cognitive_load:1-5",
   mark_done: "task_query:string",
@@ -113,14 +117,134 @@ export const TOOL_SPECS: Record<ToolName, string> = {
   timer: "action:start|pause|resume|stop, target:string|null (bucket key or task words)",
   draft_email: "to:string (email or who, e.g. 'counselor'), subject:string, body:string, reason:string — creates a draft the student reviews; never sends",
   check_in: "mood:1-5 (1 rough .. 5 great) — the student said how they feel",
+  add_exam: "course:string, date:YYYY-MM-DD, start:HH:MM|null, weight:number|null (percent of grade), units:string[]|null — a graded exam or test; the planner builds a study ramp before it and treats it as a hard deadline",
+  set_weekly_focus: "focus:string — the one thing that matters most this week ('this week is all about the AIME'); the planner protects time for it and mentions it in check-ins",
+  clear_day: "date:YYYY-MM-DD — wipe every study block on that day ('clear my whole Tuesday')",
+  set_priority: "task_query:string, priority:high|normal|low — how much a task matters; high pulls work forward, low yields to everything else",
+  explain_plan: "date:YYYY-MM-DD|null — explain why the plan looks the way it does; use when the student asks why, how come, or wants the reasoning",
 };
 
-const BUCKET_ALIASES: Record<string, string[]> = {
+export type SchedulePatch = Partial<Pick<Rules,
+  "school_days" | "rest_days" | "school_start" | "school_end" | "school_end_by_day" | "commute_min" |
+  "after_school_min" | "dinner_start" | "dinner_min" | "sleep_cutoff" | "weekend_start" |
+  "block_min" | "break_min" | "min_block_min" | "preclear_hours" | "event_prep_min" |
+  "quiet_weekday" | "quiet_weekend" | "quiet_by_day">>;
+
+const TIME_SETTINGS = ["school_start", "school_end", "dinner_start", "sleep_cutoff", "weekend_start"] as const;
+const MINUTE_SETTINGS = {
+  commute_min: [0, 180],
+  after_school_min: [0, 240],
+  dinner_min: [15, 240],
+  block_min: [20, 180],
+  break_min: [0, 90],
+  min_block_min: [10, 120],
+  preclear_hours: [0, 168],
+  event_prep_min: [0, 240],
+} as const;
+
+/** Validate a partial routine update without changing any settings the user left out. */
+export function validateSchedulePatch(value: unknown): SchedulePatch | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const allowed = new Set<string>([
+    ...TIME_SETTINGS, ...Object.keys(MINUTE_SETTINGS), "school_days", "rest_days",
+    "school_end_by_day\", \"quiet_weekday\", \"quiet_weekend\", \"quiet_by_day",
+  ]);
+  if (!Object.keys(input).length || Object.keys(input).some((key) => !allowed.has(key))) return null;
+  const patch: SchedulePatch = {};
+  const validTime = (time: unknown) => typeof time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(time);
+  const validDays = (days: unknown): days is number[] => Array.isArray(days) &&
+    days.length <= 7 && days.every((day) => typeof day === "number" && Number.isInteger(day) && day >= 1 && day <= 7) &&
+    new Set(days).size === days.length;
+  const validWindows = (windows: unknown): windows is string[] => Array.isArray(windows) && windows.length <= 6 &&
+    windows.every((window) => {
+      if (typeof window !== "string") return false;
+      const match = window.match(/^((?:[01]\d|2[0-3]):[0-5]\d)-((?:[01]\d|2[0-3]):[0-5]\d)$/);
+      return !!match && match[1] < match[2];
+    });
+
+  for (const key of TIME_SETTINGS) {
+    if (key in input) {
+      if (!validTime(input[key])) return null;
+      if (key === "school_start") {
+        const time = input[key] as string;
+        if (time < "05:00" || time > "12:00") return null;
+        patch.school_start = time;
+      } else if (key === "school_end") {
+        const time = input[key] as string;
+        if (time < "10:00" || time > "22:00") return null;
+        patch.school_end = time;
+      } else if (key === "dinner_start") {
+        const time = input[key] as string;
+        if (time < "16:00" || time > "22:00") return null;
+        patch.dinner_start = time;
+      } else if (key === "sleep_cutoff") {
+        const time = input[key] as string;
+        if (time < "18:00") return null;
+        patch.sleep_cutoff = time;
+      } else {
+        const time = input[key] as string;
+        if (time < "05:00" || time > "18:00") return null;
+        patch.weekend_start = time;
+      }
+    }
+  }
+  for (const key of Object.keys(MINUTE_SETTINGS) as (keyof typeof MINUTE_SETTINGS)[]) {
+    if (key in input) {
+      const value = input[key];
+      const [min, max] = MINUTE_SETTINGS[key];
+      if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) return null;
+      patch[key] = value;
+    }
+  }
+  if ("school_days" in input) {
+    if (!validDays(input.school_days)) return null;
+    patch.school_days = [...input.school_days].sort((a, b) => a - b);
+  }
+  if ("rest_days" in input) {
+    if (!validDays(input.rest_days)) return null;
+    patch.rest_days = [...input.rest_days].sort((a, b) => a - b);
+  }
+  if ("school_end_by_day" in input) {
+    const overrides = input.school_end_by_day;
+    if (typeof overrides !== "object" || overrides === null || Array.isArray(overrides)) return null;
+    const clean: Record<string, string> = {};
+    for (const [day, time] of Object.entries(overrides)) {
+      if (!/^[1-7]$/.test(day) || !validTime(time)) return null;
+      clean[day] = time;
+    }
+    patch.school_end_by_day = clean;
+  }
+  if ("quiet_weekday" in input) {
+    if (!validWindows(input.quiet_weekday)) return null;
+    patch.quiet_weekday = [...input.quiet_weekday];
+  }
+  if ("quiet_weekend" in input) {
+    if (!validWindows(input.quiet_weekend)) return null;
+    patch.quiet_weekend = [...input.quiet_weekend];
+  }
+  if ("quiet_by_day" in input) {
+    const windowsByDay = input.quiet_by_day;
+    if (typeof windowsByDay !== "object" || windowsByDay === null || Array.isArray(windowsByDay)) return null;
+    const clean: Record<string, string[]> = {};
+    for (const [day, windows] of Object.entries(windowsByDay)) {
+      if (!/^[1-7]$/.test(day) || !validWindows(windows)) return null;
+      clean[day] = [...windows];
+    }
+    patch.quiet_by_day = clean;
+  }
+  return patch;
+}
+
+export const BUCKET_ALIASES: Record<string, string[]> = {
   AIME: ["aime", "competition math", "comp math", "amc", "contest math"],
   USAAIO: ["usaaio", "usaio", "ai olympiad", "olympiad"],
   RESEARCH: ["research", "isef", "synopsys", "science fair"],
   ACT: ["act prep", "act"],
   PHYSICS: ["physics", "extra stem", "stem"],
+  SELF: ["self improvement", "self-improvement", "personal growth", "self care", "self-care", "journaling", "journal",
+    "meditation", "meditate", "mindfulness", "reflection", "reading for fun", "habit", "habits", "wellness", "therapy",
+    "exercise", "workout", "gym", "running", "sleep routine", "skincare", "personal project"],
 };
 const WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 const STOP = new Set(["my", "the", "a", "an", "for", "of", "to", "on", "in", "ap", "estimate", "as", "is", "task",
@@ -191,10 +315,83 @@ export function matchTasks<T extends Pick<Task, "course" | "title" | "category" 
 export const splitClauses = (text: string): string[] =>
   text.trim().split(/[;,]\s*|\.\s+|\s+and\s+(?!a half\b)(?=[a-z])|\s+but\s+|\s+so\s+(?=(?:get|finish|pre-?clear|cancel|drop|skip|move|push|set|start|pause|mark)\b)|\s+then\s+|\s+also\s+/i).map((p) => p.replace(/^[\s.]+|[\s.]+$/g, "")).filter(Boolean);
 
+/** Enhanced rule parsing for schedule editing - handles more natural language patterns */
+export function parseScheduleEdit(text: string, now: Date, buckets: Pick<Bucket, "key" | "name">[]): ToolCall[] {
+  const calls: ToolCall[] = [];
+  const ctxDate = parseDate(text, now) ?? fmtDate(now);
+  const whole = text.toLowerCase().trim();
+  
+  // "keep X but move Y" - split into two calls
+  const keepMoveMatch = whole.match(/\b(keep|don'?t move|do not move|lock|pin)\s+(?:my\s+)?(.+?)\s+(?:but|then)\s+(move|shift|push|reschedule)\s+(.+)$/i);
+  if (keepMoveMatch) {
+    const keepTarget = keepMoveMatch[2].replace(/\s+(?:block|session)\s*$/i, "").trim();
+    const moveTarget = keepMoveMatch[4].replace(/\s+(?:block|session)\s*$/i, "").trim();
+    const to = parseDate(keepMoveMatch[4], now) ?? parseDate(text, now);
+    if (to) {
+      calls.push({ tool: "keep_block", args: { target: TASK_WORDS.test(keepTarget) ? keepTarget : resolveBucket(keepTarget, buckets) ?? keepTarget, date: ctxDate } });
+      const fromMatch = keepMoveMatch[4].match(/\bfrom\s+(.+)$/i);
+      const cleanMoveTarget = fromMatch ? keepMoveMatch[4].slice(0, fromMatch.index).trim() : moveTarget;
+      const fromDate = fromMatch ? parseDate(fromMatch[1], now) : null;
+      calls.push({ tool: "move_block", args: {
+        target: TASK_WORDS.test(cleanMoveTarget) ? cleanMoveTarget : resolveBucket(cleanMoveTarget, buckets) ?? cleanMoveTarget,
+        ...(fromDate ? { from_date: fromDate } : {}),
+        to_date: to,
+        window: parseWindow(keepMoveMatch[4]) ?? "afternoon",
+      } });
+      return calls;
+    }
+  }
+  
+  // "move X to Y" patterns - only if it's a clear move command (not "don't move")
+  // Must start with move/shift/push/reschedule, not "don't move"
+  const moveMatch = whole.match(/^(?:move|shift|push|reschedule)\s+(?:my\s+)?(.+?)\s+to\s+(.+)$/i);
+  if (moveMatch) {
+    const target = moveMatch[1].replace(/\s+(?:block|session)\s*$/i, "").trim();
+    const to = parseDate(moveMatch[2], now);
+    if (to) {
+      const fromMatch = moveMatch[1].match(/\bfrom\s+(.+)$/i);
+      const cleanTarget = fromMatch ? moveMatch[1].slice(0, fromMatch.index).trim() : target;
+      const fromDate = fromMatch ? parseDate(fromMatch[1], now) : null;
+      calls.push({ tool: "move_block", args: {
+        target: TASK_WORDS.test(cleanTarget) ? cleanTarget : resolveBucket(cleanTarget, buckets) ?? cleanTarget,
+        ...(fromDate ? { from_date: fromDate } : {}),
+        to_date: to,
+        window: parseWindow(moveMatch[2]) ?? "afternoon",
+      } });
+      return calls;
+    }
+  }
+  
+  // "move X to Y" patterns in middle of sentence (after "and" or ",")
+  const moveMatch2 = whole.match(/(?:^|[,;]\s*|\s+and\s+)(move|shift|push|reschedule)\s+(?:my\s+)?(.+?)\s+to\s+(.+)$/i);
+  if (moveMatch2) {
+    const target = moveMatch2[2].replace(/\s+(?:block|session)\s*$/i, "").trim();
+    const to = parseDate(moveMatch2[3], now);
+    if (to) {
+      const fromMatch = moveMatch2[2].match(/\bfrom\s+(.+)$/i);
+      const cleanTarget = fromMatch ? moveMatch2[2].slice(0, fromMatch.index).trim() : target;
+      const fromDate = fromMatch ? parseDate(fromMatch[1], now) : null;
+      calls.push({ tool: "move_block", args: {
+        target: TASK_WORDS.test(cleanTarget) ? cleanTarget : resolveBucket(cleanTarget, buckets) ?? cleanTarget,
+        ...(fromDate ? { from_date: fromDate } : {}),
+        to_date: to,
+        window: parseWindow(moveMatch2[3]) ?? "afternoon",
+      } });
+      return calls;
+    }
+  }
+  
+  return calls;
+}
+
 /** Words that mean an assignment, not a weekly goal ("the physics lab" is a task, "physics" is a goal). */
 export const TASK_WORDS = /\b(lab|homework|hw|reading|essay|quiz|test|exam|problem set|pset|project|assignment|worksheet|draft|annotations?|report)\b/i;
 
 export function ruleParse(text: string, now: Date, buckets: Pick<Bucket, "key" | "name">[]): ToolCall[] {
+  // First try enhanced schedule editing patterns
+  const scheduleCalls = parseScheduleEdit(text, now, buckets);
+  if (scheduleCalls.length > 0) return scheduleCalls;
+  
   const calls: ToolCall[] = [];
   const ctxDate = parseDate(text, now) ?? fmtDate(now);
   const whole = text.toLowerCase().trim();
@@ -276,7 +473,19 @@ export function ruleParse(text: string, now: Date, buckets: Pick<Bucket, "key" |
     }
     if ((m = c.match(/\b(?:move|shift|push)\s+(?:my\s+)?(.+?)\s+(?:block\s+|session\s+)?to\s+(.+)$/))) {
       const to = parseDate(m[2], now);
-      if (to) { calls.push({ tool: "move_block", args: { target: resolveBucket(m[1], buckets) ?? m[1], to_date: to, window: parseWindow(m[2]) ?? "afternoon" } }); continue; }
+      if (to) {
+        const fromMatch = m[1].match(/\bfrom\s+(.+)$/);
+        const target = (fromMatch ? m[1].slice(0, fromMatch.index) : m[1])
+          .replace(/\s+(?:block|session)\s*$/i, "").replace(/^(?:my|the)\s+/i, "").trim();
+        const fromDate = fromMatch ? parseDate(fromMatch[1], now) : null;
+        calls.push({ tool: "move_block", args: {
+          target: resolveBucket(target, buckets) ?? target,
+          ...(fromDate ? { from_date: fromDate } : {}),
+          to_date: to,
+          window: parseWindow(m[2]) ?? "afternoon",
+        } });
+        continue;
+      }
     }
     if ((m = c.match(/(?:mark|set|change|make|update)\s+(?:my\s+|the\s+)?(.+?)\s+estimate\s+(?:as|to|at|=)\s+(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m)?\b/)
       ?? c.match(/^(?:my\s+|the\s+)?(.+?)\s+(?:will take|takes|should take|needs)\s+(?:like\s+|about\s+)?(?:(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?)|(an? hour and a half|half an hour|an? hour|a couple(?: of)? hours))\b/))) {
@@ -311,7 +520,40 @@ export function ruleParse(text: string, now: Date, buckets: Pick<Bucket, "key" |
       }
     }
   }
+  // The model is the only parser when one is loaded, but the rules path still has to cover the
+  // newer tools so the app stays capable when the relay is unreachable.
+  if (!calls.length) {
+    const wants = intendedTools(text);
+    const day = parseDate(text, now);
+    if (wants.has("clear_day") && day) {
+      return [{ tool: "clear_day", args: { date: day } }];
+    }
+    if (wants.has("set_weekly_focus")) {
+      // Match on the original text so "AIME" keeps its capitalization.
+      const m = text.match(/(?:this week|my focus|focus this week|priority this week|main goal)\s*(?:is|are|:|=)\s*(.+)$/i);
+      const focus = m?.[1]?.trim().replace(/[.!?]+$/, "");
+      if (focus && focus.length > 2) return [{ tool: "set_weekly_focus", args: { focus } }];
+    }
+    if (wants.has("set_priority")) {
+      const low = /\b(low|less important|can wait|not urgent)\b/.test(whole);
+      const high = /\b(high|top|most important|urgent|first)\b/.test(whole);
+      const task = findTaskIn(text, buckets);
+      if ((low || high) && task) {
+        return [{ tool: "set_priority", args: { task_query: task, priority: low && !high ? "low" : "high" } }];
+      }
+    }
+    if (wants.has("explain_plan")) {
+      return [{ tool: "explain_plan", args: day ? { date: day } : {} }];
+    }
+  }
   return calls;
+}
+
+/** Best task title match for the rules path, or "" when nothing matches. */
+function findTaskIn(text: string, _buckets: Pick<Bucket, "key" | "name">[]): string {
+  const t = text.toLowerCase();
+  const m = t.match(/(?:make|set|mark|bump|prioriti[sz]e)\s+(?:the\s+|my\s+)?(.+?)\s+(?:high|top|most important|low|less important|priority)/);
+  return m?.[1]?.trim() ?? "";
 }
 
 /** Validate tool calls from the LLM; anything malformed is dropped. */
@@ -340,12 +582,20 @@ export function validateCalls(raw: unknown): ToolCall[] {
     args = { ...args };
     if (tool === "ask_canvas" && args.what == null) args.what = args.ask ?? args.ask_type ?? args.type;
     for (const k of ["start", "end", "before", "after"]) if (args[k] != null) args[k] = normTime(args[k]);
+    if (tool === "set_schedule") {
+      for (const k of TIME_SETTINGS) if (args[k] != null) args[k] = normTime(args[k]);
+      if (typeof args.school_end_by_day === "object" && args.school_end_by_day !== null && !Array.isArray(args.school_end_by_day)) {
+        const overrides: Record<string, unknown> = {};
+        for (const [day, time] of Object.entries(args.school_end_by_day)) overrides[day] = normTime(time);
+        args.school_end_by_day = overrides;
+      }
+    }
     const ok = {
       add_event: () => typeof args.title === "string" && isDate(args.date) && isTime(args.start),
       preclear_task: () => typeof args.task_query === "string" && isDate(args.date) && isTime(args.before),
       cancel_study: () => isDate(args.date) && (args.after == null || isTime(args.after)),
       set_bucket_target: () => typeof args.bucket === "string" && Number.isFinite(Number(args.hours)) && Number(args.hours) >= 0 && Number(args.hours) <= 40,
-      move_block: () => typeof args.target === "string" && isDate(args.to_date),
+      move_block: () => typeof args.target === "string" && isDate(args.to_date) && (args.from_date == null || isDate(args.from_date)),
       set_estimate: () => typeof args.task_query === "string" && Number(args.minutes) >= 5 && Number(args.minutes) <= 1200,
       set_load: () => typeof args.task_query === "string" && Number(args.cognitive_load) >= 1 && Number(args.cognitive_load) <= 5,
       mark_done: () => typeof args.task_query === "string",
@@ -354,12 +604,27 @@ export function validateCalls(raw: unknown): ToolCall[] {
       draft_email: () => typeof args.to === "string" && typeof args.subject === "string" && typeof args.body === "string",
       check_in: () => Number(args.mood) >= 1 && Number(args.mood) <= 5,
       keep_block: () => typeof args.target === "string" && (args.date == null || isDate(args.date)),
+      remove_block: () => typeof args.target === "string" && args.target.trim().length > 0 && (args.date == null || isDate(args.date)),
+      add_exam: () => typeof args.course === "string" && args.course.trim().length > 0 && isDate(args.date)
+        && (args.start == null || isTime(args.start))
+        && (args.weight == null || (Number(args.weight) >= 0 && Number(args.weight) <= 100))
+        && (args.units == null || (Array.isArray(args.units) && args.units.every((u) => typeof u === "string"))),
+      set_weekly_focus: () => typeof args.focus === "string" && args.focus.trim().length > 2,
+      clear_day: () => isDate(args.date),
+      set_priority: () => typeof args.task_query === "string" && ["high", "normal", "low"].includes(String(args.priority)),
+      explain_plan: () => args.date == null || isDate(args.date),
       set_grade_target: () => {
         if (typeof args.target === "string") args.target = targetFrom(args.target); // models often say "A"
         return typeof args.course === "string" && args.course.length > 1 && (args.target == null || (Number(args.target) >= 50 && Number(args.target) <= 110));
       },
       schedule_task: () => typeof args.task_query === "string" && isDate(args.date),
       order_blocks: () => typeof args.first === "string" && typeof args.then === "string" && args.first !== args.then && (args.date == null || isDate(args.date)),
+      set_schedule: () => validateSchedulePatch(args) !== null,
+      add_task: () => typeof args.title === "string" && args.title.trim().length > 0 && args.title.length <= 160
+        && isDate(args.due_date)
+        && (args.description == null || (typeof args.description === "string" && args.description.length <= 500))
+        && (args.course == null || (typeof args.course === "string" && args.course.trim().length > 0 && args.course.length <= 80))
+        && (args.estimated_minutes == null || (Number.isInteger(Number(args.estimated_minutes)) && Number(args.estimated_minutes) >= 5 && Number(args.estimated_minutes) <= 1200)),
     }[tool]();
     if (ok) out.push({ tool, args });
   }
@@ -383,7 +648,14 @@ export function intendedTools(text: string): Set<ToolName> {
   on("schedule_task", /\b(do|work on|finish|get|spend|knock out|tackle|start)\b.*\b(on|this|next|tomorrow|tonight|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)\b/);
   on("order_blocks", /\b(before|after|first|then|ahead of|order)\b/);
   on("set_grade_target", /\b(grade|an? [abc][+-]?\b|get .+ to \d|raise|bring up|improve|pull up)\b/);
+  on("set_schedule", /\b(?:change|set|update|adjust|move|shift|make|shorten|extend)\b.{0,60}\b(?:school|class|schedule|routine|dinner|sleep|bedtime|study window|quiet time|commute|break|school days|rest day)\b/);
+  on("add_task", /\b(?:add|create|save|track|schedule)\b.{0,100}\b(?:task|milestone|deadline|roadmap|to-?do)\b/);
   on("keep_block", /\bkeep\b|don'?t (move|touch)|do not (move|touch)|\bleave\b|\block\b|\bpin\b|stay(s)? (where|put)|as is/);
+  on("remove_block", /\b(remove|delete|drop|cancel|clear|get rid of|take out|skip)\b.{0,40}\b(block|session|slot|study time)\b|\b(remove|delete|drop|take out)\b.{0,30}\b(aime|usaaio|research|act|physics|self)\b/);
+  on("clear_day", /\b(clear|wipe|empty|free up|nothing on|no study)\b.{0,25}\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun|tomorrow|today)\b/);
+  on("set_weekly_focus", /\b(this week|my focus|focus this week|priority this week|main goal)\b.{0,40}\b(is|are|:|=)\b/);
+  on("set_priority", /\b(make|set|mark|bump|prioriti[sz]e)\b.{0,30}\b(high|top|most important|low|less important)\b.{0,30}\b(priority)?\b/);
+  on("explain_plan", /\b(why|how come|explain|walk me through|what's the reasoning)\b.{0,40}\b(plan|schedule|today|tomorrow|week|block|workload)\b/);
   on("set_estimate", /\b(take|takes|took|taking)\b|\d+\s*(min|mins|minutes|hours?|hrs?)\b|hour and a half|half an hour|quick one|forever/);
   on("set_load", /hard|easy|difficult|brutal|tough|simple|difficulty|\bload\b|intense|killer/);
   on("mark_done", /\bdone\b|finished|turned in|submitted|completed|handed in|already did/);
@@ -410,5 +682,5 @@ export function mergeCalls(model: ToolCall[], rules: ToolCall[], text: string): 
     const k = c.tool + JSON.stringify(c.args);
     if (!seen.has(k)) { seen.add(k); out.push(c); }
   }
-  return out.slice(0, 4);
+  return out.slice(0, 8);
 }

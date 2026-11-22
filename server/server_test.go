@@ -26,6 +26,10 @@ type fakeClock struct {
 	t  time.Time
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
 func (c *fakeClock) Now() time.Time      { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
 func (c *fakeClock) Add(d time.Duration) { c.mu.Lock(); c.t = c.t.Add(d); c.mu.Unlock() }
 func ptr[T any](v T) *T                  { return &v }
@@ -471,6 +475,8 @@ func TestSyncVersioning(t *testing.T) {
 	}
 	cur.State.Buckets[0].TargetHours = 8
 	cur.State.CfC = json.RawMessage(`{"weights":[0.1,0.2],"updates":3}`)
+	cur.State.AIMemory = []AIMemoryMessage{{Role: "user", Content: "Help me plan my college applications."},
+		{Role: "assistant", Content: "Let's start with your interests and target year."}}
 	post := func(base int64) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/sync",
@@ -484,7 +490,8 @@ func TestSyncVersioning(t *testing.T) {
 		t.Fatalf("stale write must conflict: %d", rec.Code)
 	}
 	_, st, _ := s.store.Get()
-	if st.Buckets[0].TargetHours != 8 || !strings.Contains(string(st.CfC), `"updates":3`) {
+	if st.Buckets[0].TargetHours != 8 || !strings.Contains(string(st.CfC), `"updates":3`) ||
+		len(st.AIMemory) != 2 || st.AIMemory[1].Content != "Let's start with your interests and target year." {
 		t.Fatal("state or CfC weights not persisted")
 	}
 	big := DefaultState()
@@ -492,6 +499,52 @@ func TestSyncVersioning(t *testing.T) {
 	cur.State = big
 	if rec := post(2); rec.Code != 400 {
 		t.Fatalf("oversized state should be rejected, got %d", rec.Code)
+	}
+}
+
+func TestOpenRouterFreeModelCatalog(t *testing.T) {
+	s, _, _ := newTestServer(t, Config{Token: "secret"})
+	s.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "openrouter.ai" || req.URL.Path != "/api/v1/models" ||
+			req.URL.Query().Get("max_price") != "0" || req.URL.Query().Get("output_modalities") != "text" {
+			t.Fatalf("unexpected catalog request: %s", req.URL)
+		}
+		body := `{"data":[
+			{"id":"qwen/free","name":"Qwen Free","context_length":32768,
+			 "pricing":{"prompt":"0","completion":"0"},
+			 "supported_parameters":["tools","response_format","reasoning"],
+			 "benchmarks":{"artificial_analysis":{"intelligence_index":42.5}}},
+			{"id":"paid","name":"Paid","pricing":{"prompt":"0","completion":"0.000001"}},
+			{"id":"unknown-price","name":"Unknown Price","pricing":{"prompt":"-1","completion":"0"}}
+		]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})}
+
+	h := s.Routes()
+	unauth := httptest.NewRecorder()
+	h.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/api/llm/models", nil))
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated catalog request returned %d", unauth.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm/models", nil)
+	req.Header.Set("X-Relay-Token", "secret")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("catalog status %d: %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Models []openRouterFreeModel `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Models) != 1 || result.Models[0].ID != "qwen/free" ||
+		result.Models[0].ContextLength != 32768 || result.Models[0].IntelligenceIndex == nil ||
+		*result.Models[0].IntelligenceIndex != 42.5 {
+		t.Fatalf("unexpected free catalog: %+v", result.Models)
 	}
 }
 
@@ -1123,5 +1176,37 @@ func TestFastPathPlanningAndBatch(t *testing.T) {
 	rules, _ := bRes["rules"].(Rules)
 	if rules.BreakMin != 15 || rules.SleepCutoff != "22:30" {
 		t.Fatalf("unexpected rules after batch update: %+v", rules)
+	}
+}
+
+func TestRetryableLLMStatus(t *testing.T) {
+	for _, code := range []int{429, 502, 503, 504} {
+		if !retryableLLMStatus(code) {
+			t.Fatalf("%d should be retryable", code)
+		}
+	}
+	for _, code := range []int{200, 400, 401, 404, 422} {
+		if retryableLLMStatus(code) {
+			t.Fatalf("%d should not be retryable", code)
+		}
+	}
+}
+
+func TestRetryAfterDelay(t *testing.T) {
+	if got := retryAfterDelay("3", 0); got != 3*time.Second {
+		t.Fatalf("seconds header: got %s", got)
+	}
+	if got := retryAfterDelay("", 0); got != time.Second {
+		t.Fatalf("first backoff: got %s", got)
+	}
+	if got := retryAfterDelay("", 2); got != 4*time.Second {
+		t.Fatalf("third backoff: got %s", got)
+	}
+	if got := retryAfterDelay("not-a-date", 1); got != 2*time.Second {
+		t.Fatalf("garbage header should fall back to backoff: got %s", got)
+	}
+	future := time.Now().Add(5 * time.Second).UTC().Format(http.TimeFormat)
+	if got := retryAfterDelay(future, 0); got <= 0 || got > 6*time.Second {
+		t.Fatalf("http-date header: got %s", got)
 	}
 }

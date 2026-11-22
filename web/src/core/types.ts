@@ -21,6 +21,8 @@ export interface Rules {
   quiet_weekday: string[];
   quiet_weekend: string[];
   quiet_by_day?: Record<string, string[]>;
+  /** the one thing that matters most this week; the planner protects time for it */
+  weekly_focus?: string;
 }
 
 export interface Bucket {
@@ -60,6 +62,8 @@ export interface Task {
   preclear_by?: string;
   first_step?: string;
   first_step_done?: boolean;
+  /** high = pull work forward, low = yield to everything else; absent = normal */
+  priority?: "high" | "normal" | "low";
   updated_at?: number;
   deleted_at?: number;
 }
@@ -241,6 +245,11 @@ export interface CourseGrade {
   updated: string;
 }
 
+export interface AIMemoryMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface State {
   rules: Rules;
   buckets: Bucket[];
@@ -257,6 +266,7 @@ export interface State {
   meta: Meta;
   grades?: CourseGrade[];
   flags?: WorkFlag[];
+  ai_memory?: AIMemoryMessage[];
 }
 
 export const SCHOOL = "SCHOOL";
@@ -276,6 +286,7 @@ export function defaultState(): State {
       { key: "RESEARCH", name: "ISEF / Synopsys Research", target_hours: 6, logged_minutes: 0, week: "", load: 5 },
       { key: "ACT", name: "ACT Prep", target_hours: 3, logged_minutes: 0, week: "", load: 4 },
       { key: "PHYSICS", name: "Physics / Extra STEM", target_hours: 3, logged_minutes: 0, week: "", load: 3 },
+      { key: "SELF", name: "Self-improvement", target_hours: 2, logged_minutes: 0, week: "", load: 3 },
       { key: SCHOOL, name: "Tier 1 School", target_hours: 0, logged_minutes: 0, week: "", load: 3 },
     ],
     tasks: [], events: [], blocks: [], sessions: [], feedback: [],

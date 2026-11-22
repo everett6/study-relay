@@ -75,6 +75,16 @@ export function normalize(s: Partial<State> | null | undefined): State {
   st.rules = { ...d.rules, ...(s?.rules ?? {}) };
   for (const k of ["buckets", "tasks", "events", "blocks", "sessions", "feedback", "inbox", "drafts"] as const)
     if (!Array.isArray(st[k])) (st as unknown as Record<string, unknown>)[k] = k === "buckets" ? d.buckets : [];
+  if (s?.ai_memory != null) {
+    st.ai_memory = (Array.isArray(s.ai_memory) ? s.ai_memory : [])
+      .filter((m): m is NonNullable<typeof m> => !!m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+      .slice(-16)
+      .map((m) => ({ role: m.role, content: m.content.slice(0, 3000) }));
+  } else delete st.ai_memory;
+  if (!st.buckets.some((b) => b.key === "SELF")) {
+    const selfImprovement = d.buckets.find((b) => b.key === "SELF");
+    if (selfImprovement) st.buckets.push(selfImprovement);
+  }
   st.timer ??= { state: "idle", elapsed_sec: 0 };
   st.meta = { ...d.meta, ...(s?.meta ?? {}), at_risk: s?.meta?.at_risk ?? [] };
   return st;
@@ -115,6 +125,20 @@ export class Store {
   /** Apply a local edit now; it is pushed to the relay in the background. */
   update(fn: Mutation): void {
     const m: Mutation = (st) => { fn(st); this.afterMutate?.(st); };
+    m(this.state);
+    this.pending.push(m);
+    this.save();
+    this.emit();
+    void this.flush();
+  }
+
+  /** Replace the whole document (used by undo). Pushed to the relay like any other edit. */
+  replace(next: State): void {
+    const m: Mutation = (st) => {
+      for (const key of Object.keys(st) as (keyof State)[]) delete (st as unknown as Record<string, unknown>)[key];
+      Object.assign(st, structuredClone(next));
+      this.afterMutate?.(st);
+    };
     m(this.state);
     this.pending.push(m);
     this.save();

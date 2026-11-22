@@ -10,22 +10,28 @@ import (
 // The browser owns planning, LLM inference and CfC training; the relay stores the
 // document and applies small, deterministic edits requested over MCP.
 type State struct {
-	Rules    Rules           `json:"rules"`
-	Buckets  []Bucket        `json:"buckets"`
-	Tasks    []Task          `json:"tasks"`
-	Events   []Event         `json:"events"`
-	Blocks   []Block         `json:"blocks"`
-	Timer    Timer           `json:"timer"`
-	Sessions []Session       `json:"sessions"`
-	Feedback []Feedback      `json:"feedback"` // pending CfC training items (browser consumes)
-	CfC      json.RawMessage `json:"cfc,omitempty"`
-	Momentum json.RawMessage `json:"momentum,omitempty"` // browser-owned adaptive baseline
-	Inbox    []InboxItem     `json:"inbox"`
-	Drafts   []Draft         `json:"drafts"`
-	Meta     Meta            `json:"meta"`
-	Grades   []CourseGrade   `json:"grades,omitempty"` // Canvas grades + daily history (planner uses them)
-	Flags    []WorkFlag      `json:"flags,omitempty"`  // zeros and missing work found on Canvas
-	Problems []ProblemLog    `json:"problems,omitempty"`
+	Rules    Rules             `json:"rules"`
+	Buckets  []Bucket          `json:"buckets"`
+	Tasks    []Task            `json:"tasks"`
+	Events   []Event           `json:"events"`
+	Blocks   []Block           `json:"blocks"`
+	Timer    Timer             `json:"timer"`
+	Sessions []Session         `json:"sessions"`
+	Feedback []Feedback        `json:"feedback"` // pending CfC training items (browser consumes)
+	CfC      json.RawMessage   `json:"cfc,omitempty"`
+	Momentum json.RawMessage   `json:"momentum,omitempty"` // browser-owned adaptive baseline
+	Inbox    []InboxItem       `json:"inbox"`
+	Drafts   []Draft           `json:"drafts"`
+	Meta     Meta              `json:"meta"`
+	Grades   []CourseGrade     `json:"grades,omitempty"` // Canvas grades + daily history (planner uses them)
+	Flags    []WorkFlag        `json:"flags,omitempty"`  // zeros and missing work found on Canvas
+	Problems []ProblemLog      `json:"problems,omitempty"`
+	AIMemory []AIMemoryMessage `json:"ai_memory"`
+}
+
+type AIMemoryMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type ProblemLog struct {
@@ -59,6 +65,8 @@ type Rules struct {
 	QuietWeekday   []string            `json:"quiet_weekday"`
 	QuietWeekend   []string            `json:"quiet_weekend"`
 	QuietByDay     map[string][]string `json:"quiet_by_day,omitempty"`
+	// WeeklyFocus is the one thing that matters most this week; the planner protects time for it.
+	WeeklyFocus string `json:"weekly_focus,omitempty"`
 }
 
 type Bucket struct {
@@ -94,6 +102,8 @@ type Task struct {
 	PreclearBy    string   `json:"preclear_by,omitempty"`
 	FirstStep     string   `json:"first_step,omitempty"`
 	FirstStepDone bool     `json:"first_step_done,omitempty"`
+	// Priority: high pulls work forward, low yields to everything else; empty = normal.
+	Priority string `json:"priority,omitempty"`
 	UpdatedAt     int64    `json:"updated_at,omitempty"`
 	DeletedAt     int64    `json:"deleted_at,omitempty"`
 }

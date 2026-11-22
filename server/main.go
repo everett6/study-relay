@@ -126,6 +126,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/email/send", s.auth(s.sendDraftHTTP))
 	mux.HandleFunc("POST /api/discord/post", s.auth(s.discordPostHTTP))
 	mux.HandleFunc("GET /api/llm/status", s.auth(s.localLLMStatusHTTP))
+	mux.HandleFunc("GET /api/llm/models", s.auth(s.openRouterModelsHTTP))
 	mux.HandleFunc("POST /api/llm/chat", s.auth(s.localLLMChatHTTP))
 	mux.HandleFunc("GET /api/presets", s.auth(s.presetsHTTP))
 	mux.HandleFunc("POST /api/presets/apply", s.auth(s.applyPresetHTTP))

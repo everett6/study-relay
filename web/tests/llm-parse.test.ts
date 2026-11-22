@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseJSONReply, weekLine } from "../src/ai/llmClient";
+import { parseJSONReply, salvageProse, weekLine } from "../src/ai/llmClient";
 
 describe("model reply parsing", () => {
   it("skips reasoning and code fences", () => {
@@ -49,5 +49,25 @@ describe("format adapters", () => {
       { tool: "ask_canvas", args: { ask_type: "announcements", what: "announcements" } },
       { tool: "add_event", args: { title: "Club", date: "2026-11-20", start: "09:00", end: "10:30" } },
     ]);
+  });
+});
+
+describe("salvageProse", () => {
+  it("drops the model's reasoning preamble", () => {
+    const raw = 'The student is asking "how much work do I have left this week?" They want to know their remaining workload.\n\nYou have about 6 hours left this week.';
+    expect(salvageProse(raw)).toBe("You have about 6 hours left this week.");
+  });
+  it("drops a leading I-need-to sentence", () => {
+    expect(salvageProse("I need to analyze the open tasks and what's scheduled.\n\nYou have 4 tasks left.")).toBe("You have 4 tasks left.");
+  });
+  it("returns empty when the model only restated the question", () => {
+    expect(salvageProse("The student is asking about their plan.")).toBe("");
+  });
+  it("drops chain-of-thought narration", () => {
+    const raw = "We need answer user. Need parse. We need likely use tools? They ask about workload.\n\nYou have about 5.5 hours left this week.";
+    expect(salvageProse(raw)).toBe("You have about 5.5 hours left this week.");
+  });
+  it("keeps a plain answer untouched", () => {
+    expect(salvageProse("You have 3 assignments due this week.")).toBe("You have 3 assignments due this week.");
   });
 });

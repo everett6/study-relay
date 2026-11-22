@@ -209,6 +209,133 @@ func (s *Server) localLLMStatusHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type openRouterFreeModel struct {
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	ContextLength       int      `json:"context_length"`
+	SupportedParameters []string `json:"supported_parameters"`
+	IntelligenceIndex   *float64 `json:"intelligence_index,omitempty"`
+}
+
+func zeroPrice(value string) bool {
+	n, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	return err == nil && n == 0
+}
+
+func (s *Server) openRouterModelsHTTP(w http.ResponseWriter, r *http.Request) {
+	const pageSize = 1000
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	endpoint, err := url.Parse("https://openrouter.ai/api/v1/models")
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "could not prepare model catalog request")
+		return
+	}
+
+	models := make([]openRouterFreeModel, 0)
+	seen := make(map[string]bool)
+	for offset := 0; ; offset += pageSize {
+		query := endpoint.Query()
+		query.Set("output_modalities", "text")
+		query.Set("max_price", "0")
+		query.Set("limit", strconv.Itoa(pageSize))
+		query.Set("offset", strconv.Itoa(offset))
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String()+"?"+query.Encode(), nil)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "could not prepare model catalog request")
+			return
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "StudyRelay")
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			httpError(w, http.StatusBadGateway, "OpenRouter model catalog is unavailable")
+			return
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			httpError(w, http.StatusBadGateway, "could not read OpenRouter model catalog")
+			return
+		}
+		if resp.StatusCode != http.StatusOK {
+			httpError(w, http.StatusBadGateway, fmt.Sprintf("OpenRouter model catalog returned HTTP %d", resp.StatusCode))
+			return
+		}
+
+		var page struct {
+			Data []struct {
+				ID                  string   `json:"id"`
+				Name                string   `json:"name"`
+				ContextLength       int      `json:"context_length"`
+				SupportedParameters []string `json:"supported_parameters"`
+				Pricing             struct {
+					Prompt     string `json:"prompt"`
+					Completion string `json:"completion"`
+				} `json:"pricing"`
+				Benchmarks struct {
+					ArtificialAnalysis struct {
+						IntelligenceIndex *float64 `json:"intelligence_index"`
+					} `json:"artificial_analysis"`
+				} `json:"benchmarks"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			httpError(w, http.StatusBadGateway, "OpenRouter returned an invalid model catalog")
+			return
+		}
+		for _, model := range page.Data {
+			if model.ID == "" || seen[model.ID] || !zeroPrice(model.Pricing.Prompt) || !zeroPrice(model.Pricing.Completion) {
+				continue
+			}
+			seen[model.ID] = true
+			models = append(models, openRouterFreeModel{
+				ID: model.ID, Name: model.Name, ContextLength: model.ContextLength,
+				SupportedParameters: model.SupportedParameters,
+				IntelligenceIndex:   model.Benchmarks.ArtificialAnalysis.IntelligenceIndex,
+			})
+		}
+		if len(page.Data) < pageSize {
+			break
+		}
+		if offset >= 9000 {
+			httpError(w, http.StatusBadGateway, "OpenRouter model catalog exceeded the supported page limit")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+// retryableLLMStatus is true for transient upstream failures worth retrying: rate limits,
+// provider overload, and gateway timeouts. A 400/401/404 is a real problem and is not retried.
+func retryableLLMStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// retryAfterDelay honors a Retry-After header (seconds or HTTP date) and otherwise backs off
+// exponentially: 1s, 2s, 4s. The result is capped by the caller.
+func retryAfterDelay(header string, attempt int) time.Duration {
+	if v := strings.TrimSpace(header); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+			return time.Duration(secs) * time.Second
+		}
+		if when, err := http.ParseTime(v); err == nil {
+			if d := time.Until(when); d > 0 {
+				return d
+			}
+			return 0
+		}
+	}
+	return time.Duration(1<<uint(attempt)) * time.Second
+}
+
 var sharedLLMClient = &http.Client{
 	Timeout: 120 * time.Second,
 	Transport: &http.Transport{
@@ -307,6 +434,31 @@ func (s *Server) localLLMChatHTTP(w http.ResponseWriter, r *http.Request) {
 		if resp2, body2, err2 := sendReq(raw); err2 == nil {
 			resp, body = resp2, body2
 		}
+	}
+	// Free tiers rate-limit hard (429) and providers occasionally return 502/503/504. Retry a few times
+	// with backoff, honoring Retry-After when the provider sends it, so a transient limit doesn't look like a bug.
+	for attempt := 0; attempt < 3 && retryableLLMStatus(resp.StatusCode); attempt++ {
+		wait := retryAfterDelay(resp.Header.Get("Retry-After"), attempt)
+		if wait > 8*time.Second {
+			wait = 8 * time.Second // don't hold the request open longer than the client will wait
+		}
+		log.Printf("llm: upstream %d (%s), retrying in %s (attempt %d/3)", resp.StatusCode, model, wait, attempt+1)
+		select {
+		case <-ctx.Done():
+			httpError(w, http.StatusGatewayTimeout, "LLM request timed out while retrying")
+			return
+		case <-time.After(wait):
+		}
+		if resp2, body2, err2 := sendReq(raw); err2 == nil {
+			resp, body = resp2, body2
+		} else {
+			break
+		}
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		log.Printf("llm: rate limited (%s): %s", model, string(body))
+		httpError(w, http.StatusTooManyRequests, "The free model is rate-limited right now. Wait a moment and retry, or switch models in Settings → Connections.")
+		return
 	}
 	if resp.StatusCode >= 400 {
 		log.Printf("llm: chat upstream %d (%s): %s", resp.StatusCode, model, string(body))

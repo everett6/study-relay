@@ -7,10 +7,10 @@ import { TASK_TYPE } from "../ai/heuristics";
 import { SCHOOL } from "../core/types";
 import { addDays, fmtDate, fmtLocal, hm, hm12, parseLocal, startOfDay } from "../core/time";
 import { focusFor, matchCourse, recordGrades, subjectFocus } from "../core/grades";
-import { freeIntervals, plan, splitChunks, validateBlock, type PaceFn } from "../core/schedule";
+import { freeIntervals, isPianoItem, plan, splitChunks, validateBlock, type PaceFn } from "../core/schedule";
 import { Store, api } from "../core/store";
 import { CfCScheduler, features } from "../ai/cfcScheduler";
-import { applyEstimate, heuristicEstimate, matchTasks, resolveBucket, TASK_WORDS, type ToolCall } from "../ai/heuristics";
+import { applyEstimate, heuristicEstimate, matchTasks, resolveBucket, TASK_WORDS, validateSchedulePatch, type ToolCall } from "../ai/heuristics";
 import { LLMClient } from "../ai/llmClient";
 import { ADJUST, checkIn, emptyMomentum, reconcile, recordSession } from "../ai/momentum";
 
@@ -19,16 +19,46 @@ export const uid = (): string =>
 
 export interface Reply { text: string; tone?: "ok" | "warn" | "info"; data?: unknown }
 
+const TRACE_ACTIONS: Record<ToolCall["tool"], string> = {
+  add_event: "Add calendar event",
+  preclear_task: "Protect a task before a deadline",
+  cancel_study: "Cancel study blocks",
+  set_bucket_target: "Adjust weekly goal",
+  move_block: "Move a study block",
+  set_estimate: "Adjust task estimate",
+  set_load: "Adjust task effort",
+  mark_done: "Mark task complete",
+  ask_canvas: "Check Canvas",
+  timer: "Control focus timer",
+  draft_email: "Draft an email",
+  check_in: "Log a check-in",
+  keep_block: "Pin a study block",
+  schedule_task: "Schedule a task",
+  order_blocks: "Order study blocks",
+  set_grade_target: "Set a grade target",
+  set_schedule: "Change routine settings",
+  add_task: "Save a dated milestone",
+  remove_block: "Remove a study block",
+  add_exam: "Add an exam",
+  set_weekly_focus: "Set this week's focus",
+  clear_day: "Clear a whole day",
+  set_priority: "Change task priority",
+  explain_plan: "Explain the plan",
+};
+
 /** Fingerprint of everything the planner reads. Plans are rebuilt whenever it changes. */
 export function planKey(st: State): string {
+  const pianoTaskIds = new Set(st.tasks.filter(isPianoItem).map((t) => t.id));
   const parts = JSON.stringify([
-    st.tasks.map((t) => [t.id, t.status, t.due_at, t.estimated_minutes, t.human_minutes, t.cognitive_load, t.preclear_by, t.course]),
-    st.events.map((e) => [e.id, e.kind, e.start, e.end]),
+    st.tasks.filter((t) => !isPianoItem(t)).map((t) => [t.id, t.status, t.due_at, t.estimated_minutes, t.human_minutes, t.cognitive_load, t.preclear_by, t.course]),
+    st.events.filter((e) => !isPianoItem(e)).map((e) => [e.id, e.kind, e.start, e.end]),
     st.buckets.map((b) => [b.key, b.target_hours, b.logged_minutes, b.load]),
     st.rules,
-    st.blocks.filter((b) => b.locked || b.status !== "planned").map((b) => [b.id, b.start, b.end, b.status, b.locked]),
+    st.blocks.filter((b) => !isPianoItem(b) && !(b.task_id && pianoTaskIds.has(b.task_id))
+      && (b.locked || b.status !== "planned")).map((b) => [b.id, b.start, b.end, b.status, b.locked]),
     st.momentum?.mode,
-    (st.grades ?? []).map((g) => [g.course, g.score, g.target, g.ignore, g.history[0]?.date, g.history[g.history.length - 1]?.date]),
+    (st.grades ?? []).filter((g) => !/\bpiano\b/i.test(g.course))
+      .map((g) => [g.course, g.score, g.target, g.ignore, g.history[0]?.date, g.history[g.history.length - 1]?.date]),
   ]);
   let h = 0x811c9dc5; // FNV-1a
   for (let i = 0; i < parts.length; i++) { h ^= parts.charCodeAt(i); h = Math.imul(h, 0x01000193); }
@@ -72,7 +102,7 @@ export class Engine {
 
   pace(st: State): PaceFn {
     const energy = this.energyNow(st);
-    const eventDays = new Set(st.events.filter((e) => e.kind === "event").map((e) => e.start.slice(0, 10)));
+    const eventDays = new Set(st.events.filter((e) => e.kind === "event" && !isPianoItem(e)).map((e) => e.start.slice(0, 10)));
     return (at, taskType, minutes, key) =>
       this.cfc.predict(at, features(at, taskType, minutes, this.cfc.paceFor(key), energy, eventDays.has(fmtDate(at))));
   }
@@ -93,13 +123,17 @@ export class Engine {
   /** Close out passed blocks (hit/miss), update the baseline, then re-plan from now. */
   replanInto(st: State, now = this.clock()): { missed: Block[] } {
     st.momentum ??= emptyMomentum(now);
+    const pianoTaskIds = new Set(st.tasks.filter(isPianoItem).map((t) => t.id));
+    const isPianoBlock = (b: Block) => !!b.task_id && pianoTaskIds.has(b.task_id);
+    const pianoBlocks = st.blocks.filter(isPianoBlock);
+    st.blocks = st.blocks.filter((b) => !isPianoBlock(b));
     if (st.timer.state !== "idle" && st.timer.block_id) { // keep the block being worked on in place
       const running = st.blocks.find((b) => b.id === st.timer.block_id);
       if (running) running.locked = true;
     }
     const { missed } = reconcile(st, now);
     const res = plan(st, now, { pace: this.pace(st), newId: uid, adjust: ADJUST[st.momentum!.mode] });
-    st.blocks = res.blocks.filter((b) => parseLocal(b.start) > addDays(startOfDay(now), -14)); // trim old history
+    st.blocks = [...pianoBlocks, ...res.blocks.filter((b) => parseLocal(b.start) > addDays(startOfDay(now), -14))]; // trim old history
     st.meta.at_risk = res.atRisk;
     st.meta.needs_replan = false;
     st.meta.plan_key = planKey(st);
@@ -109,7 +143,7 @@ export class Engine {
   replan(): void { this.store.update((st) => { this.replanInto(st); }); }
 
   async estimateMissing(): Promise<number> {
-    const todo = this.state.tasks.filter((t) => t.status === "open" && !t.estimated_minutes);
+    const todo = this.state.tasks.filter((t) => t.status === "open" && !isPianoItem(t) && !t.estimated_minutes);
     if (!todo.length) return 0;
     // Always seed instant heuristic estimates first so the Matrix renders immediately on any browser.
     this.store.update((st) => {
@@ -291,7 +325,7 @@ export class Engine {
   scheduleTaskOn(taskId: string, date: string, window: string | null, now = this.clock()): { placed: number; short: number } {
     const st = this.state;
     const t = st.tasks.find((x) => x.id === taskId);
-    if (!t) return { placed: 0, short: 0 };
+    if (!t || isPianoItem(t)) return { placed: 0, short: 0 };
     const r = st.rules;
     const lockedElsewhere = st.blocks.filter((b) => b.task_id === taskId && b.locked && b.date !== date && b.status === "planned")
       .reduce((m, b) => m + (parseLocal(b.end).getTime() - parseLocal(b.start).getTime()) / 60000, 0);
@@ -329,9 +363,9 @@ export class Engine {
   orderBlocks(first: string, then: string, date: string, now = this.clock()): { ok: boolean; text: string } {
     const st = this.state;
     const find = (q: string) => {
-      const wantTask = TASK_WORDS.test(q) ? matchTasks(q, st.tasks.filter((t) => t.status === "open"))[0] : undefined;
+      const wantTask = TASK_WORDS.test(q) ? matchTasks(q, st.tasks.filter((t) => t.status === "open" && !isPianoItem(t)))[0] : undefined;
       const key = wantTask ? null : resolveBucket(q, st.buckets);
-      const task = key ? undefined : wantTask ?? matchTasks(q, st.tasks.filter((t) => t.status === "open"))[0];
+      const task = key ? undefined : wantTask ?? matchTasks(q, st.tasks.filter((t) => t.status === "open" && !isPianoItem(t)))[0];
       return st.blocks.filter((b) => b.date === date && b.status === "planned" && parseLocal(b.end) > now
         && (key ? b.kind === "bucket" && b.bucket === key : !!task && b.task_id === task.id)).sort((x, y) => x.start.localeCompare(y.start))[0];
     };
@@ -565,27 +599,114 @@ export class Engine {
   // ------------------------------------------------------------------ chat & voice
   lastThinking = "";
   lastVia: "llm" | "rules" = "rules";
+  lastReply = "";
+  lastTrace: string[] = [];
+  /** Snapshot taken before an AI turn so its changes can be undone in one click. */
+  private undoSnapshot: { state: State; label: string } | null = null;
+
+  /** Undo the last AI turn's changes. Returns the label of what was undone, or null. */
+  undoLastAI(): string | null {
+    if (!this.undoSnapshot) return null;
+    const { state, label } = this.undoSnapshot;
+    this.undoSnapshot = null;
+    this.store.replace(state);
+    return label;
+  }
+
+  get canUndoAI(): boolean { return this.undoSnapshot !== null; }
+
   async run(text: string): Promise<Reply[]> {
     const now = this.clock();
+    this.llm.restoreHistory(this.state.ai_memory);
+    const storedMemory = JSON.stringify(this.state.ai_memory ?? []);
     const { calls, reply, thinking, via } = await this.llm.command(text, this.state, now);
     this.lastThinking = thinking;
     this.lastVia = via;
+    this.lastReply = reply.trim();
+    const model = this.llm.status.modelLabel ?? this.llm.status.model ?? "AI";
+    this.lastTrace = [
+      `Request: ${text}`,
+      `Decision source: ${via === "llm" ? model : "Built-in rules"}`,
+    ];
+    const memory = this.llm.chatHistory.slice(-16);
+    if (JSON.stringify(memory) !== storedMemory) {
+      this.store.update((st) => { st.ai_memory = memory; });
+      await this.store.flush();
+      this.lastTrace.push(this.store.status === "synced"
+        ? "Persistent AI memory synced to the relay."
+        : "Persistent AI memory is saved locally and will sync when the relay is available.");
+    }
     const out: Reply[] = [];
     if (!calls.length) {
+      this.lastTrace.push("No action tool was selected; no changes were made.");
       out.push({ tone: "info", text: reply || "I didn't catch a change in that. Try “I have a banquet at 7 tonight”, “what's my grade in bio?”, or “start a focus session for AIME”." });
       return out;
     }
-    for (const c of calls) out.push(await this.apply(c, text, now));
-    if (reply && via === "llm") out.unshift({ tone: "info", text: reply });
+    // Snapshot before the first change so the whole AI turn can be undone as one step.
+    const before = structuredClone(this.state);
+    for (const c of calls) {
+      this.lastTrace.push(`Action: ${TRACE_ACTIONS[c.tool]}`);
+      const result = await this.apply(c, text, now);
+      this.lastTrace.push(`Outcome: ${result.text}`);
+      out.push(result);
+    }
+    if (calls.length) {
+      this.undoSnapshot = { state: before, label: calls.map((c) => TRACE_ACTIONS[c.tool]).join(", ") };
+      this.lastTrace.push("Undo is available for this change.");
+    }
+    if (reply && via === "llm") {
+      out.unshift({ tone: "info", text: reply });
+    }
     return out;
+  }
+
+  async clearChatMemory(): Promise<boolean> {
+    this.llm.clearHistory();
+    this.store.update((st) => { st.ai_memory = []; });
+    await this.store.flush();
+    return this.store.status === "synced";
   }
 
   async apply(c: ToolCall, original: string, now: Date): Promise<Reply> {
     const a = c.args as Record<string, string>;
     const st = this.state;
-    const findTask = (q: string) => matchTasks(q, st.tasks.filter((t) => t.status === "open"))[0];
+    const findTask = (q: string) => matchTasks(q, st.tasks.filter((t) => t.status === "open" && !isPianoItem(t)))[0];
     switch (c.tool) {
+      case "add_task": {
+        const title = String(a.title).trim();
+        const course = typeof a.course === "string" && a.course.trim() ? a.course.trim() : "College Planning";
+        const dueDate = String(a.due_date);
+        const dueAt = `${dueDate}T23:59`;
+        if (parseLocal(dueAt) < now) return { tone: "warn", text: `That milestone date (${dueDate}) has already passed, so I didn't add it.` };
+        const rawEstimate = c.args.estimated_minutes;
+        const estimate = rawEstimate == null || rawEstimate === "" ? 45 : Number(rawEstimate);
+        if (!Number.isInteger(estimate) || estimate < 5 || estimate > 1200)
+          return { tone: "warn", text: "Milestone estimate must be between 5 and 1,200 minutes; nothing was added." };
+        const description = typeof a.description === "string" ? a.description.trim().slice(0, 500) : undefined;
+        const duplicate = (t: Task) => t.status === "open"
+          && t.course.toLowerCase() === course.toLowerCase()
+          && t.title.toLowerCase() === title.toLowerCase()
+          && t.due_at?.slice(0, 10) === dueDate;
+        if (st.tasks.some(duplicate)) return { tone: "info", text: `“${title}” is already tracked for ${dueDate}.` };
+        const milestone: Task = {
+          id: uid(), source: "assistant", course, title, description, category: "project", task_type: "Project",
+          due_at: dueAt, cognitive_load: 3, llm_minutes: estimate, estimated_minutes: estimate, human_minutes: null,
+          confidence: 0.6, recommended_45m_blocks: splitChunks(estimate, st.rules.block_min, st.rules.min_block_min),
+          est_source: "heuristic", logged_minutes: 0, status: "open",
+        };
+        let added = false;
+        this.store.update((s) => {
+          if (s.tasks.some(duplicate)) return;
+          s.tasks.push(milestone);
+          added = true;
+          this.replanInto(s, now);
+        });
+        return added
+          ? { tone: "ok", text: `Saved “${title}” in ${course} for ${dueDate}. Far-future milestones stay in Tasks and enter the Week plan as the date approaches.` }
+          : { tone: "info", text: `“${title}” is already tracked for ${dueDate}.` };
+      }
       case "add_event": {
+        if (isPianoItem({ title: String(a.title) })) return { tone: "info", text: "Ignored the Piano event as requested; it won't affect your study plan." };
         const end = a.end ?? fmtLocal(new Date(parseLocal(`${a.date}T${a.start}`).getTime() + 2 * 3600000)).slice(11);
         const start = parseLocal(`${a.date}T${a.start}`);
         const prepCut = new Date(start.getTime() - st.rules.event_prep_min * 60000);
@@ -624,15 +745,43 @@ export class Engine {
         this.store.update((s) => { s.buckets.find((b) => b.key === key)!.target_hours = Number(a.hours); this.replanInto(s, now); });
         return { tone: "ok", text: `${key} is now ${a.hours} h/week.` };
       }
+      case "set_schedule": {
+        const patch = validateSchedulePatch(c.args);
+        if (!patch) return { tone: "warn", text: "I couldn't apply those routine settings. Check the times, days and limits, then try again." };
+        const next = { ...st.rules, ...patch };
+        const schoolEnds = next.school_days.map((day) => next.school_end_by_day?.[String(day)] ?? next.school_end);
+        if (schoolEnds.some((end) => end <= next.school_start)) {
+          return { tone: "warn", text: "School dismissal must be later than the school start time. Your schedule was not changed." };
+        }
+        if (schoolEnds.some((end) => end >= next.sleep_cutoff) || next.dinner_start >= next.sleep_cutoff) {
+          return { tone: "warn", text: "Your sleep cutoff must be later than school dismissal and dinner. Your schedule was not changed." };
+        }
+        this.store.update((s) => {
+          Object.assign(s.rules, patch);
+          this.replanInto(s, now);
+        });
+        const changes = Object.entries(patch).map(([key, value]) =>
+          `${key.replace(/_/g, " ")}: ${Array.isArray(value) ? value.join(", ") : JSON.stringify(value)}`).join("; ");
+        return { tone: "ok", text: `Updated your routine (${changes}) and rebuilt the study plan around it.` };
+      }
       case "move_block": {
         const wantTask = TASK_WORDS.test(String(a.target)) ? findTask(String(a.target)) : undefined;
         const key = wantTask ? null : resolveBucket(String(a.target), st.buckets);
         const task = key ? undefined : wantTask ?? findTask(String(a.target));
+        if (!key && !task) return { tone: "warn", text: `I couldn't match “${a.target}” to a task or weekly goal, so nothing was changed.` };
+        const fromDate = typeof a.from_date === "string" ? a.from_date : null;
+        const source = st.blocks
+          .filter((b) => b.status === "planned" && parseLocal(b.start) > now
+            && (fromDate == null || b.date === fromDate)
+            && (key ? b.kind === "bucket" && b.bucket === key : b.task_id === task!.id))
+          .sort((a, b) => a.start.localeCompare(b.start))[0];
+        if (!source) return { tone: "warn", text: `I couldn't find a planned ${key ?? task!.title} block${fromDate ? ` on ${fromDate}` : ""} in the calendar, so nothing was changed.` };
         const ranges: Record<string, [string, string]> = { morning: ["06:00", "12:00"], afternoon: ["12:00", "18:30"], evening: ["18:30", "23:59"] };
         const [ws, we] = ranges[a.window as string] ?? ranges.afternoon;
         const day = parseLocal(`${a.to_date}T00:00`);
-        const busy = st.blocks.filter((b) => b.date === a.to_date && (b.locked || b.status === "done")).map((b) => [parseLocal(b.start), parseLocal(b.end)] as [Date, Date]);
-        const len = st.rules.block_min;
+        const busy = st.blocks.filter((b) => b.id !== source.id && b.date === a.to_date && (b.locked || b.status === "done"))
+          .map((b) => [parseLocal(b.start), parseLocal(b.end)] as [Date, Date]);
+        const len = Math.round((parseLocal(source.end).getTime() - parseLocal(source.start).getTime()) / 60000);
         const slot = freeIntervals(st.rules, day, st.events, busy, now).find((iv) => {
           const s = Math.max(iv.s.getHours() * 60 + iv.s.getMinutes(), hm(ws));
           const e = Math.min(iv.e.getHours() * 60 + iv.e.getMinutes(), hm(we));
@@ -641,18 +790,16 @@ export class Engine {
         if (!slot) return { tone: "warn", text: `No free ${len}-minute slot that ${a.window ?? "afternoon"} on ${a.to_date}.` };
         const sMin = Math.max(slot.s.getHours() * 60 + slot.s.getMinutes(), hm(ws));
         const s0 = new Date(day.getTime() + sMin * 60000), e0 = new Date(s0.getTime() + len * 60000);
+        let moved = false;
         this.store.update((s) => {
-          const today = fmtDate(now);
-          if (key) { // drop one of today's planned blocks for that goal, if any
-            const i = s.blocks.findIndex((b) => b.bucket === key && b.date === today && b.status === "planned" && !b.locked);
-            if (i >= 0) s.blocks.splice(i, 1);
-          }
-          s.blocks.push({ id: uid(), date: a.to_date, start: fmtLocal(s0), end: fmtLocal(e0), kind: key ? "bucket" : "task",
-            task_id: task?.id, bucket: key ?? SCHOOL, title: key ? s.buckets.find((b) => b.key === key)!.name : `${task?.course}: ${task?.title}`,
-            load: key ? s.buckets.find((b) => b.key === key)!.load : task?.cognitive_load ?? 3, quiet: false, locked: true, status: "planned" });
+          const block = s.blocks.find((b) => b.id === source.id && b.status === "planned");
+          if (!block) return;
+          Object.assign(block, { date: a.to_date, start: fmtLocal(s0), end: fmtLocal(e0), locked: true });
+          moved = true;
           this.replanInto(s, now);
         });
-        return { tone: "ok", text: `Pinned ${key ?? task?.title ?? a.target} on ${a.to_date} at ${fmtLocal(s0).slice(11)}.` };
+        if (!moved) return { tone: "warn", text: `That calendar block changed before I could move it; nothing was changed.` };
+        return { tone: "ok", text: `Moved ${source.title} from ${source.date} to ${a.to_date} at ${fmtLocal(s0).slice(11)}.` };
       }
       case "schedule_task": {
         const t = findTask(String(a.task_query));
@@ -667,6 +814,7 @@ export class Engine {
         return { tone: r.ok ? "ok" : "warn", text: r.text };
       }
       case "set_grade_target": {
+        if (/\bpiano\b/i.test(String(a.course))) return { tone: "info", text: "Piano isn't part of school-grade planning, so I left it unchanged." };
         const r = this.setGradeTarget(String(a.course), a.target == null ? null : Number(a.target));
         return { tone: r.ok ? "ok" : "warn", text: r.text };
       }
@@ -679,9 +827,101 @@ export class Engine {
           && (key ? b.bucket === key && b.kind === "bucket" : b.task_id === task!.id);
         const ids = st.blocks.filter(hit).sort((x, y) => x.start.localeCompare(y.start)).slice(0, a.date ? 9 : 1).map((b) => b.id);
         if (!ids.length) return { tone: "warn", text: `${key ?? task!.title} has no upcoming block to keep${a.date ? ` on ${a.date}` : ""}.` };
-        this.store.update((s) => { for (const b of s.blocks) if (ids.includes(b.id)) b.locked = true; this.replanInto(s, now); });
+        // Locking only pins a block that is already in the plan, so no replan is needed here.
+        // Replanning would regenerate every other block and destroy the target of a follow-up
+        // move in the same AI turn (e.g. "keep AIME but move research"). Updating plan_key keeps
+        // the store's afterMutate hook from replanning for this lock-only change.
+        this.store.update((s) => {
+          for (const b of s.blocks) if (ids.includes(b.id)) b.locked = true;
+          s.meta.plan_key = planKey(s);
+        });
         const first = this.state.blocks.find((b) => b.id === ids[0]);
         return { tone: "ok", text: `Kept ${key ?? task!.title}${first ? ` at ${hm12(first.start)} on ${first.date}` : ""}. Everything else can still shift around it.` };
+      }
+      case "remove_block": {
+        const wantTask = TASK_WORDS.test(String(a.target)) ? findTask(String(a.target)) : undefined;
+        const key = wantTask ? null : resolveBucket(String(a.target), st.buckets);
+        const task = key ? undefined : wantTask ?? findTask(String(a.target));
+        if (!key && !task) return { tone: "warn", text: `I couldn't match “${a.target}” to a task or weekly goal, so nothing was removed.` };
+        const date = typeof a.date === "string" ? a.date : null;
+        const hit = (b: Block) => b.status === "planned" && parseLocal(b.end) > now
+          && (date == null || b.date === date)
+          && (key ? b.kind === "bucket" && b.bucket === key : b.task_id === task!.id);
+        const doomed = st.blocks.filter(hit).sort((x, y) => x.start.localeCompare(y.start));
+        if (!doomed.length) return { tone: "warn", text: `There's no upcoming ${key ?? task!.title} block${date ? ` on ${date}` : ""} to remove.` };
+        const target = doomed[0];
+        this.store.update((s) => {
+          s.blocks = s.blocks.filter((b) => b.id !== target.id);
+          // blackout the freed slot so the planner doesn't immediately put the same work back there
+          s.events.push({ id: uid(), title: "Removed block", kind: "blackout", start: target.start, end: target.end });
+          this.replanInto(s, now);
+        });
+        return { tone: "ok", text: `Removed the ${key ?? task!.title} block at ${hm12(target.start)} on ${target.date}. The rest re-planned around it.` };
+      }
+      case "add_exam": {
+        const course = String(a.course).trim();
+        const date = String(a.date);
+        const start = typeof a.start === "string" && a.start ? a.start : "08:00";
+        const end = fmtLocal(new Date(parseLocal(`${date}T${start}`).getTime() + 2 * 3600000)).slice(11);
+        const weight = a.weight == null ? null : Number(a.weight);
+        const units = Array.isArray(a.units) ? a.units.map((u) => String(u)).filter(Boolean) : [];
+        const title = weight != null ? `${course} exam (${weight}% of grade)` : `${course} exam`;
+        this.store.update((s) => {
+          s.events.push({ id: uid(), title, kind: "event", start: `${date}T${start}`, end: `${date}T${end}` });
+          // An exam is a hard deadline: pull any open work in that course ahead of it.
+          for (const t of s.tasks) {
+            if (t.status !== "open" || t.course.toLowerCase() !== course.toLowerCase()) continue;
+            if (t.due_at && parseLocal(t.due_at) > parseLocal(`${date}T${start}`)) t.preclear_by = `${date}T${start}`;
+          }
+          this.replanInto(s, now);
+        });
+        const detail = [weight != null ? `${weight}% of your grade` : null, units.length ? units.join(", ") : null]
+          .filter(Boolean).join(" · ");
+        return { tone: "ok", text: `Added ${course} exam on ${date} at ${hm12(`${date}T${start}`)}${detail ? ` (${detail})` : ""}. Work in that course now lands before it.` };
+      }
+      case "set_weekly_focus": {
+        const focus = String(a.focus).trim();
+        this.store.update((s) => { s.rules.weekly_focus = focus; this.replanInto(s, now); });
+        return { tone: "ok", text: `This week's focus is “${focus}”. I'll protect time for it first.` };
+      }
+      case "clear_day": {
+        const date = String(a.date);
+        const doomed = st.blocks.filter((b) => b.date === date && b.status === "planned");
+        if (!doomed.length) return { tone: "warn", text: `There's nothing planned on ${date} to clear.` };
+        this.store.update((s) => {
+          s.blocks = s.blocks.filter((b) => !(b.date === date && b.status === "planned"));
+          s.events.push({ id: uid(), title: "Day cleared", kind: "blackout", start: `${date}T00:00`, end: `${date}T23:59` });
+          this.replanInto(s, now);
+        });
+        return { tone: "ok", text: `Cleared ${doomed.length} block${doomed.length > 1 ? "s" : ""} on ${date}. The day is free.` };
+      }
+      case "set_priority": {
+        const t = findTask(String(a.task_query));
+        if (!t) return { tone: "warn", text: `I couldn't find a task matching “${a.task_query}”.` };
+        const priority = String(a.priority) as "high" | "normal" | "low";
+        this.store.update((s) => {
+          const x = s.tasks.find((y) => y.id === t.id)!;
+          if (priority === "normal") delete x.priority;
+          else x.priority = priority;
+          this.replanInto(s, now);
+        });
+        const why = priority === "high" ? "It'll be pulled forward ahead of other work."
+          : priority === "low" ? "It'll yield to everything else." : "It's back to normal priority.";
+        return { tone: "ok", text: `${t.title} is now ${priority === "normal" ? "normal" : priority} priority. ${why}` };
+      }
+      case "explain_plan": {
+        const date = typeof a.date === "string" ? a.date : fmtDate(now);
+        const dayBlocks = st.blocks.filter((b) => b.date === date && b.status !== "done").slice(0, 6);
+        const risk = st.meta.at_risk.length;
+        const focus = st.rules.weekly_focus;
+        const parts: string[] = [];
+        if (focus) parts.push(`This week's focus is “${focus}”, so that gets the best slots.`);
+        if (dayBlocks.length) {
+          parts.push(`On ${date} you have ${dayBlocks.map((b) => `${b.title} (${hm12(b.start)})`).join(", ")}.`);
+        } else parts.push(`Nothing is planned on ${date}.`);
+        if (risk) parts.push(`${risk} item${risk > 1 ? "s are" : " is"} at risk because there isn't enough free time before the deadline — sleep and buffers are protected, so something has to give.`);
+        else parts.push("Everything fits before its deadline with sleep and buffers protected.");
+        return { tone: "info", text: parts.join(" ") };
       }
       case "set_estimate": {
         const t = findTask(a.task_query);

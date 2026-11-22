@@ -52,6 +52,10 @@ export const isSchoolDay = (r: Rules, d: Date): boolean => !schoolHolidayName(d)
 /** The day's dismissal time, honouring per-weekday overrides (block days). */
 export const schoolEnd = (r: Rules, d: Date): string => r.school_end_by_day?.[String(isoDow(d))] || r.school_end;
 
+export function isPianoItem(item: { title: string; course?: string }): boolean {
+  return /\bpiano\b/i.test(`${item.course ?? ""} ${item.title}`);
+}
+
 export function fixedSpans(r: Rules, day: Date, events: CalEvent[]): Fixed[] {
   const out: Fixed[] = [];
   const add = (kind: string, title: string, s: Date, e: Date) => { if (e > s) out.push({ kind, title, s, e }); };
@@ -67,6 +71,7 @@ export function fixedSpans(r: Rules, day: Date, events: CalEvent[]): Fixed[] {
   add("sleep", "Sleep (hard cutoff)", atMin(day, hm(r.sleep_cutoff)), atMin(day, 24 * 60));
   const d0 = startOfDay(day), d1 = addDays(d0, 1);
   for (const ev of events) {
+    if (isPianoItem(ev)) continue;
     const s = parseLocal(ev.start), e = parseLocal(ev.end);
     if (e <= d0 || s >= d1) continue;
     if (ev.kind === "event" && r.event_prep_min > 0 && s >= d0)
@@ -188,7 +193,9 @@ export function plan(state: State, now: Date,
   const dayKeys = days.map(fmtDate);
   const horizonEnd = addDays(today, horizon);
 
-  const kept = state.blocks.filter((b) => b.status === "done" || b.locked || parseLocal(b.start) < now);
+  const pianoTaskIds = new Set(state.tasks.filter(isPianoItem).map((t) => t.id));
+  const kept = state.blocks.filter((b) => !(b.task_id && pianoTaskIds.has(b.task_id))
+    && (b.status === "done" || b.locked || parseLocal(b.start) < now));
   const futureLocked = kept.filter((b) => b.status === "planned" && b.locked && parseLocal(b.start) >= now);
   const busy = new Map<string, [Date, Date][]>();
   const lockedTask = new Map<string, number>();
@@ -222,6 +229,7 @@ export function plan(state: State, now: Date,
   type Req = { t: Task; mins: number; deadline: Date; due: Date | null; urgent: boolean; preclear: boolean };
   const reqs: Req[] = [];
   for (const t of state.tasks) {
+    if (isPianoItem(t)) continue;
     if (t.status !== "open") continue;
     let mins = effMinutes(t) - t.logged_minutes - (lockedTask.get(t.id) ?? 0);
     if (opts.pace && t.human_minutes == null) mins = Math.round((mins * opts.pace(now, t.task_type, mins, t.course)) / 5) * 5;
@@ -234,6 +242,13 @@ export function plan(state: State, now: Date,
     let deadline = pre ?? due ?? horizonEnd;
     let late = false;
     if (deadline <= now) { deadline = horizonEnd; late = true; }
+    // High priority pulls work forward; low priority waits until closer to the deadline.
+    if (t.priority === "high" && deadline > now) {
+      const pulled = new Date(now.getTime() + Math.min(2 * 24 * 3600000, (deadline.getTime() - now.getTime()) / 2));
+      if (pulled < deadline) deadline = pulled;
+    } else if (t.priority === "low" && due && due > now) {
+      deadline = due;
+    }
     reqs.push({ t, mins, deadline, due, urgent: late || !!pre || deadline <= urgentCut, preclear: !!pre });
   }
   const tier1Day = new Map<string, number>(), taskDay = new Map<string, number>();
