@@ -111,9 +111,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sync", s.auth(s.postSync))
 	mux.HandleFunc("POST /api/canvas/proxy", s.auth(s.canvasProxy))
 	mux.HandleFunc("POST /mcp", s.auth(s.originCheck(s.mcpPost)))
+	mux.HandleFunc("DELETE /mcp", s.auth(s.originCheck(s.mcpDelete)))
 	mux.HandleFunc("GET /mcp/sse", s.auth(s.originCheck(s.mcpSSE)))
 	mux.HandleFunc("GET /mcp", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Allow", "POST")
+		w.Header().Set("Allow", "POST, DELETE")
 		httpError(w, http.StatusMethodNotAllowed, "use POST /mcp (or GET /mcp/sse for the SSE transport)")
 	})
 	mux.HandleFunc("GET /api/canvas/explore", s.auth(s.exploreHTTP))

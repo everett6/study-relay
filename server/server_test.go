@@ -968,3 +968,58 @@ func TestEmbeddedPresetsLWWAndBackup(t *testing.T) {
 		t.Fatalf("seedDemoState failed: err=%v tasks=%d blocks=%d", err, len(st.Tasks), len(st.Blocks))
 	}
 }
+
+func TestMCPSessionID(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	la, _ := time.LoadLocation("America/Los_Angeles")
+	s := NewServer(store, Config{}, la, time.Now)
+	ts := httptest.NewServer(s.Routes())
+	defer ts.Close()
+
+	// 1. initialize returns Mcp-Session-Id
+	resp, err := http.Post(ts.URL+"/mcp", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("initialize status = %d", resp.StatusCode)
+	}
+	sid := resp.Header.Get("Mcp-Session-Id")
+	if sid == "" {
+		t.Fatal("expected Mcp-Session-Id header on initialize response")
+	}
+
+	// 2. tools/list with Mcp-Session-Id echoes it
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", sid)
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("tools/list status = %d", resp2.StatusCode)
+	}
+	if got := resp2.Header.Get("Mcp-Session-Id"); got != sid {
+		t.Fatalf("echoed Mcp-Session-Id = %q, want %q", got, sid)
+	}
+
+	// 3. DELETE /mcp terminates session with 204
+	delReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/mcp", nil)
+	delReq.Header.Set("Mcp-Session-Id", sid)
+	resp3, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE /mcp status = %d, want 204", resp3.StatusCode)
+	}
+}

@@ -317,8 +317,53 @@ type sseSession struct {
 }
 
 type mcpSessions struct {
-	mu sync.Mutex
-	m  map[string]*sseSession
+	mu   sync.Mutex
+	m    map[string]*sseSession
+	http map[string]time.Time
+}
+
+func (s *Server) recordHTTPSession(sid string) {
+	s.sse.mu.Lock()
+	defer s.sse.mu.Unlock()
+	if s.sse.http == nil {
+		s.sse.http = map[string]time.Time{}
+	}
+	now := s.clock()
+	if len(s.sse.http) >= 256 {
+		for k, ts := range s.sse.http {
+			if now.Sub(ts) > 24*time.Hour {
+				delete(s.sse.http, k)
+			}
+		}
+		if len(s.sse.http) >= 256 {
+			for k := range s.sse.http {
+				delete(s.sse.http, k)
+				break
+			}
+		}
+	}
+	s.sse.http[sid] = now
+}
+
+func (s *Server) touchHTTPSession(sid string) {
+	if sid == "" {
+		return
+	}
+	s.sse.mu.Lock()
+	if s.sse.http == nil {
+		s.sse.http = map[string]time.Time{}
+	}
+	s.sse.http[sid] = s.clock()
+	s.sse.mu.Unlock()
+}
+
+func (s *Server) mcpDelete(w http.ResponseWriter, r *http.Request) {
+	if sid := strings.TrimSpace(r.Header.Get("Mcp-Session-Id")); sid != "" {
+		s.sse.mu.Lock()
+		delete(s.sse.http, sid)
+		s.sse.mu.Unlock()
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) mcpPost(w http.ResponseWriter, r *http.Request) {
@@ -331,6 +376,7 @@ func (s *Server) mcpPost(w http.ResponseWriter, r *http.Request) {
 	}
 	var out []byte
 	var rpcLabel string
+	var isInit bool
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		var reqs []rpcRequest
@@ -341,6 +387,9 @@ func (s *Server) mcpPost(w http.ResponseWriter, r *http.Request) {
 			resps := []rpcResponse{}
 			labels := make([]string, 0, len(reqs))
 			for _, rq := range reqs {
+				if rq.Method == "initialize" {
+					isInit = true
+				}
 				labels = append(labels, rq.Method)
 				if resp := s.handleRPC(rq); resp != nil {
 					resps = append(resps, *resp)
@@ -358,6 +407,9 @@ func (s *Server) mcpPost(w http.ResponseWriter, r *http.Request) {
 			out, _ = json.Marshal(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{-32700, "parse error"}})
 		} else {
 			rpcLabel = rq.Method
+			if rq.Method == "initialize" {
+				isInit = true
+			}
 			if rq.Method == "tools/call" {
 				var p struct {
 					Name string `json:"name"`
@@ -392,12 +444,23 @@ func (s *Server) mcpPost(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
+	httpSid := strings.TrimSpace(r.Header.Get("Mcp-Session-Id"))
+	if isInit && out != nil {
+		httpSid = s.newID()
+		s.recordHTTPSession(httpSid)
+	} else if httpSid != "" {
+		s.touchHTTPSession(httpSid)
+	}
+	if httpSid != "" {
+		w.Header().Set("Mcp-Session-Id", httpSid)
+		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
+	}
 	if out == nil { // notifications only
-		log.Printf("mcp: POST /mcp %s status=202 dur=%s", rpcLabel, time.Since(start).Round(time.Millisecond))
+		log.Printf("mcp: POST /mcp %s status=202 sid=%s dur=%s", rpcLabel, httpSid, time.Since(start).Round(time.Millisecond))
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	log.Printf("mcp: POST /mcp %s status=200 dur=%s bytes=%d", rpcLabel, time.Since(start).Round(time.Millisecond), len(out))
+	log.Printf("mcp: POST /mcp %s status=200 sid=%s dur=%s bytes=%d", rpcLabel, httpSid, time.Since(start).Round(time.Millisecond), len(out))
 	w.Header().Set("Content-Type", "application/json")
 	if len(out) > 2048 && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		w.Header().Set("Content-Encoding", "gzip")
