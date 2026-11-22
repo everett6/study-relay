@@ -136,6 +136,13 @@ func TestMCPHandshake(t *testing.T) {
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v", names)
 	}
+	for _, rawT := range out["result"].(map[string]any)["tools"].([]any) {
+		m := rawT.(map[string]any)
+		ann := m["annotations"].(map[string]any)
+		if m["name"] == "get_daily_briefing" && ann["readOnlyHint"] != true {
+			t.Fatalf("expected get_daily_briefing readOnlyHint=true, got %v", ann)
+		}
+	}
 	_, out = rpc(t, h, `{"jsonrpc":"2.0","id":3,"method":"nope"}`)
 	if out["error"].(map[string]any)["code"].(float64) != -32601 {
 		t.Fatal("expected method not found")

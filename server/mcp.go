@@ -42,10 +42,49 @@ type rpcResponse struct {
 	Error   *rpcError       `json:"error,omitempty"`
 }
 
+type toolAnnotations struct {
+	ReadOnlyHint    bool `json:"readOnlyHint"`
+	DestructiveHint bool `json:"destructiveHint"`
+	IdempotentHint  bool `json:"idempotentHint"`
+	OpenWorldHint   bool `json:"openWorldHint"`
+}
+
 type tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	InputSchema map[string]any   `json:"inputSchema"`
+	Annotations *toolAnnotations `json:"annotations,omitempty"`
+}
+
+var readOnlyToolNames = map[string]bool{
+	"get_schedule_and_buckets":  true,
+	"canvas_explore":            true,
+	"get_grades":                true,
+	"list_inbox":                true,
+	"get_week_overview":         true,
+	"get_momentum_and_sessions": true,
+	"get_study_resources":       true,
+	"get_counselor_digest":      true,
+	"get_audit_log":             true,
+	"get_next_problems":         true,
+	"get_daily_briefing":        true,
+	"find_free_slots":           true,
+	"search_tasks":              true,
+	"get_assignment_details":    true,
+}
+
+func annotatedTools() []tool {
+	all := append(append([]tool{}, tools...), mcpToolsV2...)
+	for i := range all {
+		ro := readOnlyToolNames[all[i].Name]
+		all[i].Annotations = &toolAnnotations{
+			ReadOnlyHint:    ro,
+			DestructiveHint: all[i].Name == "delete_task_or_event",
+			IdempotentHint:  ro,
+			OpenWorldHint:   false,
+		}
+	}
+	return all
 }
 
 func obj(props map[string]any, required ...string) map[string]any {
@@ -450,7 +489,7 @@ func (s *Server) handleRPC(rq rpcRequest) *rpcResponse {
 	case "ping":
 		return reply(map[string]any{}, nil)
 	case "tools/list":
-		return reply(map[string]any{"tools": append(append([]tool{}, tools...), mcpToolsV2...)}, nil)
+		return reply(map[string]any{"tools": annotatedTools()}, nil)
 	case "resources/list":
 		return reply(map[string]any{"resources": mcpResources}, nil)
 	case "resources/read":
