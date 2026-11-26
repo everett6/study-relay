@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,6 +83,9 @@ func schoolHolidayName(day time.Time) string {
 
 func isSchoolDay(r Rules, day time.Time) bool {
 	if schoolHolidayName(day) != "" {
+		return false
+	}
+	if slices.Contains(r.NoSchoolDates, day.Format("2006-01-02")) {
 		return false
 	}
 	wd := int(day.Weekday())

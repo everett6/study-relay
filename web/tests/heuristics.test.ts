@@ -46,6 +46,16 @@ describe("rule parser (LLM fallback)", () => {
     ] });
     expect(ok.map((c) => c.tool)).toEqual(["add_event", "draft_email"]);
   });
+  it("rejects an add_event whose end time is malformed, but allows a missing end", () => {
+    const ok = validateCalls({ calls: [
+      { tool: "add_event", args: { title: "Practice", date: "2026-11-20", start: "18:00" } },
+      { tool: "add_event", args: { title: "Practice", date: "2026-11-20", start: "18:00", end: "20:00" } },
+      { tool: "add_event", args: { title: "Bad", date: "2026-11-20", start: "18:00", end: "8pm" } },
+      { tool: "add_event", args: { title: "Bad", date: "2026-11-20", start: "18:00", end: "25:00" } },
+    ] });
+    expect(ok).toHaveLength(2);
+    expect(ok.map((c) => c.args.end)).toEqual([undefined, "20:00"]);
+  });
   it("allows explicit routine edits and rejects invalid settings", () => {
     const calls = validateCalls([
       { tool: "set_schedule", args: { school_days: [1, 2, 3, 4, 5], school_start: "9:00", school_end: "16:00", after_school_min: 30 } },

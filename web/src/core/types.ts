@@ -21,6 +21,10 @@ export interface Rules {
   quiet_weekday: string[];
   quiet_weekend: string[];
   quiet_by_day?: Record<string, string[]>;
+  /** weekly goal -> the only weekdays it may be planned on (1=Mon..7=Sun); missing = any day */
+  goal_days?: Record<string, number[]>;
+  /** one-off YYYY-MM-DD dates with no school (break, sick day, school closed) */
+  no_school_dates?: string[];
   /** the one thing that matters most this week; the planner protects time for it */
   weekly_focus?: string;
 }

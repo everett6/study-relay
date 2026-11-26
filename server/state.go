@@ -65,6 +65,10 @@ type Rules struct {
 	QuietWeekday   []string            `json:"quiet_weekday"`
 	QuietWeekend   []string            `json:"quiet_weekend"`
 	QuietByDay     map[string][]string `json:"quiet_by_day,omitempty"`
+	// GoalDays limits a weekly goal (bucket key) to these ISO weekdays; missing = any day.
+	GoalDays map[string][]int `json:"goal_days,omitempty"`
+	// NoSchoolDates are one-off YYYY-MM-DD days without school (breaks, sick days).
+	NoSchoolDates []string `json:"no_school_dates,omitempty"`
 	// WeeklyFocus is the one thing that matters most this week; the planner protects time for it.
 	WeeklyFocus string `json:"weekly_focus,omitempty"`
 }
@@ -103,9 +107,9 @@ type Task struct {
 	FirstStep     string   `json:"first_step,omitempty"`
 	FirstStepDone bool     `json:"first_step_done,omitempty"`
 	// Priority: high pulls work forward, low yields to everything else; empty = normal.
-	Priority string `json:"priority,omitempty"`
-	UpdatedAt     int64    `json:"updated_at,omitempty"`
-	DeletedAt     int64    `json:"deleted_at,omitempty"`
+	Priority  string `json:"priority,omitempty"`
+	UpdatedAt int64  `json:"updated_at,omitempty"`
+	DeletedAt int64  `json:"deleted_at,omitempty"`
 }
 
 type Event struct {

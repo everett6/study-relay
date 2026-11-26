@@ -48,6 +48,9 @@ type Config struct {
 	MatrixLlamaBin  string
 	MatrixGGUFPath  string
 	MatrixLlamaPort int
+	// MatrixLlamaCore is the CPU core the ephemeral llama-server is pinned to.
+	// PiQuant owns core 3 on the Pi, so that core is refused.
+	MatrixLlamaCore int
 	RelayUser       string
 	RelayPass       string
 }
@@ -478,6 +481,7 @@ func main() {
 			"Run `study-relay pair` to print a link that signs a device in. Set RELAY_TOKEN to choose your own.", tokenFile)
 	}
 	matrixPort, _ := strconv.Atoi(env("MATRIX_LLAMA_PORT", "18089"))
+	matrixCore, _ := strconv.Atoi(env("MATRIX_LLAMA_CORE", "0"))
 	srv := NewServer(store, Config{
 		CanvasBase:      env("CANVAS_BASE_URL", canvasDefault),
 		Token:           token,
@@ -485,6 +489,7 @@ func main() {
 		MatrixLlamaBin:  os.Getenv("MATRIX_LLAMA_BIN"),
 		MatrixGGUFPath:  os.Getenv("MATRIX_GGUF_PATH"),
 		MatrixLlamaPort: matrixPort,
+		MatrixLlamaCore: matrixCore,
 		RelayUser:       os.Getenv("RELAY_USER"),
 		RelayPass:       os.Getenv("RELAY_PASS"),
 	}, loc, nil)

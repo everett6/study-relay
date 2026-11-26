@@ -229,6 +229,10 @@ export function plannerSystem(state: State): string {
     "- Usually ONE call. Use multiple calls only when the student asks for multiple changes or explicitly asks to save a roadmap's milestones (up to 8 add_task calls). Never add calls the student didn't ask for.\n" +
     "- After any change the planner re-plans everything else by itself. Only call tools for what the student asked to change.\n" +
     "- FIXED items (school, meals, sleep, events) and due dates never move. KEPT blocks stay where they are.\n" +
+    "- \"No school today/tomorrow/this week\", a break, a sick day -> days_off with those dates (copy from the Dates line). A trip or being away -> days_off with away=true. set_schedule school_days is ONLY for a permanent change to the weekly routine.\n" +
+    "- A message with several requests -> one call for EACH request (e.g. days_off + add_event + draft_email).\n" +
+    "- \"No studying on <day>\" / a day off -> set_schedule rest_days (ALL rest days: current ones from Rules plus the new one). Weekday keys and lists use numbers 1=Mon..7=Sun.\n" +
+    "- Limiting a goal to certain days EVERY week (\"AIME on weekends only\", \"always do research on Tuesdays\") -> set_goal_days. A one-time change (\"put USAAIO on Tuesday\", \"do AIME Wednesday instead\") -> move_block for this week only. Changing a goal's hours -> set_bucket_target.\n" +
     "- Use set_schedule for explicit requests to change school days/hours, dismissal overrides, commute, breaks, dinner, sleep cutoff, study windows (weekday, weekend or day-specific), rest days or block lengths. Include only settings the student asked to change; unspecified rules stay as-is.\n" +
     "- Ignore all Piano-related tasks and events: do not schedule, estimate, move, mark done, pre-clear, or change them. They are outside this planner's scope.\n" +
     "- ACT prep is extracurricular, not school coursework. Keep ACT work in the ACT goal; never treat it as a school assignment.\n" +
@@ -373,6 +377,10 @@ export class LLMClient {
   thinking = true;
   /** Last raw model reply (for the benchmark page). */
   lastRaw = "";
+  /** How many tool calls the model proposed in its last turn that failed validation. */
+  lastRejected = 0;
+  /** True when the model's last answer was unusable (no JSON, only narration or an echo). */
+  lastUnusable = false;
   /** Last model thinking/reasoning trace (from <think> tags or OpenRouter reasoning). */
   lastThinking = "";
   /** Preserved conversation turns across messages and model switches. */
@@ -621,7 +629,10 @@ export class LLMClient {
         cognitive_load: Math.round(load), minutes: Math.round(minutes / 5) * 5,
         confidence: Number.isFinite(conf) ? Math.min(0.95, Math.max(0.2, conf)) : 0.7, source: "llm",
         why: typeof j.why === "string" && j.why.trim() ? j.why.trim().slice(0, 100) : h.why };
-      if (this.estCache.size > 200) this.estCache.clear();
+      // Bound the cache without throwing away every estimate: drop the oldest entries only.
+      if (this.estCache.size > 200) {
+        for (const k of [...this.estCache.keys()].slice(0, 100)) this.estCache.delete(k);
+      }
       this.estCache.set(key, res);
       return res;
     } catch { return h; }
@@ -638,7 +649,13 @@ export class LLMClient {
     try {
       const fixed = plannerSystem(state);
       const bucketSummary = state.buckets.filter((b) => b.key !== SCHOOL).map((b) => `${b.key} ${Math.round(b.logged_minutes / 60 * 10) / 10}/${b.target_hours}h`).join(", ");
-      const rulesSummary = `${state.rules.block_min}m blocks, ${state.rules.break_min}m breaks, dinner ${state.rules.dinner_start} (${state.rules.dinner_min}m), sleep ${state.rules.sleep_cutoff}`;
+      const dn = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+      const ends = Object.entries(state.rules.school_end_by_day ?? {}).map(([d, t]) => `${dn[+d]} ${t}`).join(", ");
+      const goalDays = Object.entries(state.rules.goal_days ?? {}).map(([k, ds]) => `${k} ${ds.map((d) => dn[d]).join("/")}`).join("; ");
+      const offDays = (state.rules.no_school_dates ?? []).filter((d) => d >= fmtDate(now)).join(", ");
+      const rulesSummary = `${offDays ? `no school on ${offDays}; ` : ""}school ${state.rules.school_days.map((d) => dn[d]).join("/")} ${state.rules.school_start}-${state.rules.school_end}${ends ? ` (out ${ends})` : ""}, ` +
+        `${state.rules.block_min}m blocks, ${state.rules.break_min}m breaks, dinner ${state.rules.dinner_start} (${state.rules.dinner_min}m), sleep ${state.rules.sleep_cutoff}` +
+        `${state.rules.rest_days?.length ? `, rest days ${state.rules.rest_days.map((d) => dn[d]).join("/")}` : ""}${goalDays ? `, goal days: ${goalDays}` : ""}`;
       const savedMilestones = longRangeMilestones(state, now);
       const context = `\n\nBackground (only to look up names, dates and what may move; act ONLY on the student's message):\n` +
         `Now: ${now.toLocaleDateString("en-US", { weekday: "short" })} ${fmtDate(now)} ${now.toTimeString().slice(0, 5)}\n` +
@@ -658,9 +675,19 @@ export class LLMClient {
       const detailed = /\b(plan|planning|roadmap|timeline|colleges?|applications?|admissions?|career|months?|years?|long[- ]term|explain|compare|financial aid|scholarship|future|guidance|advice|what should|how can)\b/i.test(text);
       // Send more history for better context (12 turns instead of 6)
       const historyForModel = this.chatHistory.slice(-12);
-      const res = await this.jsonCall(fixed + context, text, detailed ? 1800 : 900, fixed, PLANNER_SCHEMA, historyForModel);
+      let res = await this.jsonCall(fixed + context, text, detailed ? 1800 : 900, fixed, PLANNER_SCHEMA, historyForModel);
+      if (res.value == null && !res.raw.trim().startsWith("{")) {
+        // the model thought out loud instead of answering: ask once more, strictly
+        const again = await this.jsonCall(fixed + context, text, detailed ? 1800 : 900, fixed, PLANNER_SCHEMA,
+          [...historyForModel, { role: "user", content: text }, { role: "assistant", content: res.raw.slice(0, 600) },
+            { role: "user", content: 'That was not JSON. Reply now with ONLY the JSON object {"calls":[...],"reply":"..."} for my message above.' }]);
+        if (again.value != null) res = again;
+      }
+      this.lastUnusable = false;
       const j = res.value as { calls?: unknown; reply?: unknown } | null;
+      const proposed = Array.isArray(j?.calls) ? j.calls.length : 0;
       let raw = validateCalls(j?.calls ?? []);
+      this.lastRejected = Math.max(0, proposed - raw.length);
       if (!raw.length) raw = validateCalls(salvageCalls(res.raw));
       let reply = typeof j?.reply === "string" ? j.reply.slice(0, 6000) : "";
       if (!reply && res.raw) {
@@ -668,6 +695,11 @@ export class LLMClient {
         // salvage it instead of showing the student a canned "I didn't catch that".
         const cleaned = res.raw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
         if (cleaned && !cleaned.startsWith("{")) reply = salvageProse(cleaned);
+        // an echo of the request or leftover narration is not an answer
+        if (/^(?:the (?:student|user)|we (?:need|have)|let me|i need to|(?:ok(?:ay)?|so),? )/i.test(reply) || reply.includes(`"${text}"`)) {
+          this.lastUnusable = true;
+          reply = "";
+        }
       }
       // The model is the only parser. Rules are used ONLY when no model is loaded or the call throws —
       // never merged into a model turn, so what the AI decided is exactly what runs.

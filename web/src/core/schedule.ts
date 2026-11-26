@@ -47,7 +47,8 @@ export function schoolHolidayName(day: Date): string {
   return "";
 }
 
-export const isSchoolDay = (r: Rules, d: Date): boolean => !schoolHolidayName(d) && r.school_days.includes(isoDow(d));
+export const isSchoolDay = (r: Rules, d: Date): boolean =>
+  !schoolHolidayName(d) && !(r.no_school_dates ?? []).includes(fmtDate(d)) && r.school_days.includes(isoDow(d));
 
 /** The day's dismissal time, honouring per-weekday overrides (block days). */
 export const schoolEnd = (r: Rules, d: Date): string => r.school_end_by_day?.[String(isoDow(d))] || r.school_end;
@@ -200,9 +201,17 @@ export function plan(state: State, now: Date,
   const busy = new Map<string, [Date, Date][]>();
   const lockedTask = new Map<string, number>();
   const lockedBucketWeek = new Map<string, number>();
+  const brkMs = r.break_min * 60000;
+  // a block already under way keeps its time: nothing new is planned on top of it
+  for (const b of kept) {
+    if (b.status !== "planned" || b.locked) continue;
+    const s = parseLocal(b.start), e = parseLocal(b.end);
+    if (s < now && e > now) (busy.get(b.date) ?? busy.set(b.date, []).get(b.date)!).push([s, new Date(e.getTime() + brkMs)]);
+  }
   for (const b of futureLocked) {
     const s = parseLocal(b.start), e = parseLocal(b.end);
-    (busy.get(b.date) ?? busy.set(b.date, []).get(b.date)!).push([s, e]);
+    // a break on both sides of a pinned block, like between planned ones
+    (busy.get(b.date) ?? busy.set(b.date, []).get(b.date)!).push([new Date(s.getTime() - brkMs), new Date(e.getTime() + brkMs)]);
     if (b.task_id) lockedTask.set(b.task_id, (lockedTask.get(b.task_id) ?? 0) + minutesBetween(s, e));
     else { const k = `${reviewKey(b.title) ?? b.bucket}|${isoWeek(s)}`; lockedBucketWeek.set(k, (lockedBucketWeek.get(k) ?? 0) + minutesBetween(s, e)); }
   }
@@ -333,47 +342,62 @@ export function plan(state: State, now: Date,
     // Give each session a day: spread a goal over different days, keep few subjects per day,
     // and fill days in proportion to their free time. Unplaceable minutes are a shortfall.
     const elig = all.map(fmtDate).filter((k) => (caps.get(k) ?? 0) > 0);
-    const used = new Map(elig.map((k) => [k, 0]));
+    const usedTime = new Map(elig.map((k) => [k, 0])), usedStudy = new Map(elig.map((k) => [k, 0]));
     const subj = new Map(elig.map((k) => [k, new Set<string>()]));
     const maxSubj = (k: string) => (isSchoolDay(r, parseLocal(`${k}T12:00:00`)) ? 3 : 4);
-    const sesMin = (x: { cs: number[] }) => x.cs.reduce((a, c) => a + c, 0) + (x.cs.length - 1) * r.break_min;
-    sessions.sort((a, z) => sesMin(z) - sesMin(a) || z.b.load - a.b.load);
-    for (const ses of sessions) {
-      const need = sesMin(ses);
-      const fits = (k: string) => used.get(k)! + need <= caps.get(k)!;
-      const score = (k: string) => (used.get(k)! + need) / caps.get(k)!;
-      const pick = (ok: (k: string) => boolean) => elig.filter((k) => fits(k) && ok(k)).sort((a, z) => score(a) - score(z) || a.localeCompare(z))[0];
-      const k = pick((d) => !subj.get(d)!.has(ses.b.key) && subj.get(d)!.size < maxSubj(d))
+    // a day's goal room: its free time, and the daily study cap left after homework
+    // (course reviews may go one block over the cap)
+    const capLeft = (k: string, key: string) =>
+      Math.max(0, dailyCap - (tier1Day.get(k) ?? 0)) + (key.startsWith("REVIEW:") ? r.block_min : 0) - usedStudy.get(k)!;
+    const study = (x: { cs: number[] }) => x.cs.reduce((a, c) => a + c, 0);
+    const span = (x: { cs: number[] }) => study(x) + (x.cs.length - 1) * r.break_min;
+    // every goal's first sitting before anyone's second; harder goals first within a round
+    const rank = new Map<object, number>(), seen = new Map<string, number>();
+    for (const x of sessions) { const n = seen.get(x.b.key) ?? 0; rank.set(x, n); seen.set(x.b.key, n + 1); }
+    // within a round, goals that already have time this week (pinned or done) wait for the ones that don't
+    const have = (b: (typeof buckets)[number]) => (lockedBucketWeek.get(`${b.key}|${wk}`) ?? 0) + (wk === thisWeek && b.week === thisWeek ? b.logged_minutes : 0);
+    const byRound = (list: typeof sessions) => [...list].sort((a, z) => rank.get(a)! - rank.get(z)! || have(a.b) - have(z.b) || z.b.load - a.b.load);
+    const place = (ses: (typeof sessions)[number], k: string) => {
+      usedTime.set(k, usedTime.get(k)! + span(ses) + r.break_min);
+      usedStudy.set(k, usedStudy.get(k)! + study(ses));
+      subj.get(k)!.add(ses.b.key);
+      (queue.get(k) ?? queue.set(k, []).get(k)!).push(...ses.cs.map((c) => ({ b: ses.b, c })));
+    };
+    const pickDay = (ses: (typeof sessions)[number]) => {
+      const fits = (k: string) => usedTime.get(k)! + span(ses) <= caps.get(k)! && study(ses) <= capLeft(k, ses.b.key);
+      const load = (k: string) => usedTime.get(k)! / Math.max(1, caps.get(k)!);
+      const allowed = r.goal_days?.[ses.b.key];
+      const okDay = (k: string) => !allowed?.length || allowed.includes(isoDow(parseLocal(`${k}T12:00:00`)));
+      const pick = (ok: (k: string) => boolean) =>
+        elig.filter((k) => okDay(k) && fits(k) && ok(k)).sort((a, z) => load(a) - load(z) || a.localeCompare(z))[0];
+      return pick((d) => !subj.get(d)!.has(ses.b.key) && subj.get(d)!.size < maxSubj(d))
         ?? pick((d) => subj.get(d)!.has(ses.b.key) || subj.get(d)!.size < maxSubj(d))
         ?? pick(() => true);
-      if (!k) {
-        if (!elig.length || elig.every((d) => caps.get(d)! < r.min_block_min)) { shortfall[ses.b.key] = (shortfall[ses.b.key] ?? 0) + need; continue; }
-        // nothing fits whole: put it on the roomiest day and let the day's pass carry what is left
-        const roomy = [...elig].sort((a, z) => (caps.get(z)! - used.get(z)!) - (caps.get(a)! - used.get(a)!))[0];
-        (queue.get(roomy) ?? queue.set(roomy, []).get(roomy)!).push(...ses.cs.map((c) => ({ b: ses.b, c })));
-        used.set(roomy, used.get(roomy)! + need); subj.get(roomy)!.add(ses.b.key);
-        continue;
-      }
-      used.set(k, used.get(k)! + need); subj.get(k)!.add(ses.b.key);
-      (queue.get(k) ?? queue.set(k, []).get(k)!).push(...ses.cs.map((c) => ({ b: ses.b, c })));
+    };
+    // pass 1: whole sittings (up to two blocks); pass 2: what did not fit, one block at a time
+    const singles: typeof sessions = [];
+    for (const ses of byRound(sessions)) {
+      const k = pickDay(ses);
+      if (k) place(ses, k);
+      else for (const c of ses.cs) { const one = { b: ses.b, cs: [c] }; rank.set(one, rank.get(ses)!); singles.push(one); }
+    }
+    for (const ses of byRound(singles)) {
+      const k = pickDay(ses);
+      if (k) place(ses, k);
+      else shortfall[ses.b.key] = (shortfall[ses.b.key] ?? 0) + study(ses);
     }
     let carry: { b: (typeof buckets)[number]; c: number }[] = [];
     for (const k of [...new Set([...queue.keys(), ...wdays.map(fmtDate)])].sort()) {
       const items = carry.concat(queue.get(k) ?? []);
       carry = [];
       if (!byDay.has(k)) continue;
-      // Alternate subjects so a day's limited study budget is not spent on one goal.
+      // One subject at a time (its blocks back to back): reviews first, then hardest goal.
+      // The day already holds only a few subjects and fits the daily cap (assigned above).
       const grouped = new Map<string, typeof items>();
       for (const it of items) (grouped.get(it.b.key) ?? grouped.set(it.b.key, []).get(it.b.key)!).push(it);
-      const groups = [...grouped.values()]
-        .sort((a, z) => Number(!a[0].b.key.startsWith("REVIEW:")) - Number(!z[0].b.key.startsWith("REVIEW:")) || z[0].b.load - a[0].b.load);
-      const ordered: typeof items = [];
-      while (groups.some((group) => group.length)) {
-        for (const group of groups) {
-          const next = group.shift();
-          if (next) ordered.push(next);
-        }
-      }
+      const ordered = [...grouped.values()]
+        .sort((a, z) => Number(!a[0].b.key.startsWith("REVIEW:")) - Number(!z[0].b.key.startsWith("REVIEW:")) || z[0].b.load - a[0].b.load)
+        .flat();
       for (const { b, c } of ordered) {
         let left = c;
         while (left >= r.min_block_min) {

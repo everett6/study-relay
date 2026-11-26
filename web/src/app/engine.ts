@@ -10,7 +10,7 @@ import { focusFor, matchCourse, recordGrades, subjectFocus } from "../core/grade
 import { freeIntervals, isPianoItem, plan, splitChunks, validateBlock, type PaceFn } from "../core/schedule";
 import { Store, api } from "../core/store";
 import { CfCScheduler, features } from "../ai/cfcScheduler";
-import { applyEstimate, heuristicEstimate, matchTasks, resolveBucket, TASK_WORDS, validateSchedulePatch, type ToolCall } from "../ai/heuristics";
+import { applyEstimate, heuristicEstimate, matchTasks, resolveBucket, resolveTarget, validateSchedulePatch, type ToolCall } from "../ai/heuristics";
 import { LLMClient } from "../ai/llmClient";
 import { ADJUST, checkIn, emptyMomentum, reconcile, recordSession } from "../ai/momentum";
 
@@ -37,6 +37,8 @@ const TRACE_ACTIONS: Record<ToolCall["tool"], string> = {
   order_blocks: "Order study blocks",
   set_grade_target: "Set a grade target",
   set_schedule: "Change routine settings",
+  set_goal_days: "Choose days for a weekly goal",
+  days_off: "Mark days with no school",
   add_task: "Save a dated milestone",
   remove_block: "Remove a study block",
   add_exam: "Add an exam",
@@ -64,6 +66,9 @@ export function planKey(st: State): string {
   for (let i = 0; i < parts.length; i++) { h ^= parts.charCodeAt(i); h = Math.imul(h, 0x01000193); }
   return (h >>> 0).toString(36);
 }
+
+/** A reply that says a change happened (\"I've moved…\", \"Updated your…\"). */
+const CLAIMS_CHANGE = /\b(i'?ve|i have|i)\s+(moved|removed|cleared|updated|changed|set|added|adjusted|rescheduled|blocked|scheduled)\b|^(updated|moved|removed|cleared|changed|set|added|done)\b/i;
 
 export class Engine {
   cfc: CfCScheduler;
@@ -158,8 +163,11 @@ export class Engine {
     const focus = subjectFocus(this.state, this.clock());
     const refined: [string, ReturnType<typeof heuristicEstimate>][] = [];
     for (const t of todo) {
-      const e = await this.llm.estimate(t, this.state.tasks, focusFor(focus, t.course));
-      if (e.source === "llm") refined.push([t.id, e]);
+      // A failed refinement must never escape: the heuristic estimates above are already applied.
+      try {
+        const e = await this.llm.estimate(t, this.state.tasks, focusFor(focus, t.course));
+        if (e.source === "llm") refined.push([t.id, e]);
+      } catch { /* keep the heuristic estimate for this task */ }
     }
     if (refined.length) {
       this.store.update((st) => {
@@ -363,9 +371,7 @@ export class Engine {
   orderBlocks(first: string, then: string, date: string, now = this.clock()): { ok: boolean; text: string } {
     const st = this.state;
     const find = (q: string) => {
-      const wantTask = TASK_WORDS.test(q) ? matchTasks(q, st.tasks.filter((t) => t.status === "open" && !isPianoItem(t)))[0] : undefined;
-      const key = wantTask ? null : resolveBucket(q, st.buckets);
-      const task = key ? undefined : wantTask ?? matchTasks(q, st.tasks.filter((t) => t.status === "open" && !isPianoItem(t)))[0];
+      const { key, task } = resolveTarget(q, st.buckets, st.tasks.filter((t) => t.status === "open" && !isPianoItem(t)));
       return st.blocks.filter((b) => b.date === date && b.status === "planned" && parseLocal(b.end) > now
         && (key ? b.kind === "bucket" && b.bucket === key : !!task && b.task_id === task.id)).sort((x, y) => x.start.localeCompare(y.start))[0];
     };
@@ -639,6 +645,17 @@ export class Engine {
     const out: Reply[] = [];
     if (!calls.length) {
       this.lastTrace.push("No action tool was selected; no changes were made.");
+      // never let a model's "Done, I updated…" stand when nothing actually ran
+      if (this.llm.lastUnusable) {
+        out.push({ tone: "warn", text: "The AI model gave an unusable answer, so nothing was changed. Try again. If it keeps happening, pick one specific model in Settings → Connections instead of the random free router." });
+        return out;
+      }
+      if (via === "llm" && (this.llm.lastRejected > 0 || CLAIMS_CHANGE.test(reply))) {
+        out.push({ tone: "warn", text: `Nothing was changed. ${this.llm.lastRejected > 0
+          ? "The AI tried a change the app couldn't read."
+          : "The AI answered without making a change."} Try again, or say it more directly (e.g. “AIME only on weekends”, “no studying on Sundays”, “school ends at 2:45 on Mondays”).` });
+        return out;
+      }
       out.push({ tone: "info", text: reply || "I didn't catch a change in that. Try “I have a banquet at 7 tonight”, “what's my grade in bio?”, or “start a focus session for AIME”." });
       return out;
     }
@@ -654,7 +671,8 @@ export class Engine {
       this.undoSnapshot = { state: before, label: calls.map((c) => TRACE_ACTIONS[c.tool]).join(", ") };
       this.lastTrace.push("Undo is available for this change.");
     }
-    if (reply && via === "llm") {
+    // the model's own words only when something it asked for actually worked
+    if (reply && via === "llm" && (out.some((o) => o.tone !== "warn") || !CLAIMS_CHANGE.test(reply))) {
       out.unshift({ tone: "info", text: reply });
     }
     return out;
@@ -745,6 +763,37 @@ export class Engine {
         this.store.update((s) => { s.buckets.find((b) => b.key === key)!.target_hours = Number(a.hours); this.replanInto(s, now); });
         return { tone: "ok", text: `${key} is now ${a.hours} h/week.` };
       }
+      case "days_off": {
+        const dates = [...new Set((a.dates as unknown as string[]))].sort();
+        const away = String(a.away) === "true";
+        const title = typeof a.title === "string" && a.title.trim() ? a.title.trim().slice(0, 60) : away ? "Away" : "No school";
+        const cut = fmtDate(addDays(startOfDay(now), -30));
+        this.store.update((s) => {
+          s.rules.no_school_dates = [...new Set([...(s.rules.no_school_dates ?? []).filter((d) => d >= cut), ...dates])].sort();
+          if (away) for (const d of dates) {
+            if (!s.events.some((e) => !e.deleted_at && e.kind === "blackout" && e.title === title && e.start === `${d}T00:00`))
+              s.events.push({ id: uid(), title, kind: "blackout", start: `${d}T00:00`, end: `${d}T23:59` });
+          }
+          this.replanInto(s, now);
+        });
+        const fmt = (d: string) => new Date(`${d}T12:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+        return { tone: "ok", text: `No school on ${dates.map(fmt).join(", ")}${away ? `, and no study (${title})` : ""}. Your weekly routine is unchanged; the plan was rebuilt.` };
+      }
+      case "set_goal_days": {
+        const key = resolveBucket(String(a.bucket), st.buckets);
+        if (!key || key === SCHOOL) return { tone: "warn", text: `There's no goal called ${a.bucket}.` };
+        const days = [...new Set((a.days as unknown as number[]).map(Number))].sort((x, y) => x - y);
+        this.store.update((s) => {
+          const g = { ...(s.rules.goal_days ?? {}) };
+          if (days.length && days.length < 7) g[key] = days; else delete g[key];
+          s.rules.goal_days = g;
+          this.replanInto(s, now);
+        });
+        const names = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        return { tone: "ok", text: days.length && days.length < 7
+          ? `${key} now goes only on ${days.map((d) => names[d]).join(", ")}. The week was re-planned.`
+          : `${key} can go on any day again. The week was re-planned.` };
+      }
       case "set_schedule": {
         const patch = validateSchedulePatch(c.args);
         if (!patch) return { tone: "warn", text: "I couldn't apply those routine settings. Check the times, days and limits, then try again." };
@@ -765,9 +814,7 @@ export class Engine {
         return { tone: "ok", text: `Updated your routine (${changes}) and rebuilt the study plan around it.` };
       }
       case "move_block": {
-        const wantTask = TASK_WORDS.test(String(a.target)) ? findTask(String(a.target)) : undefined;
-        const key = wantTask ? null : resolveBucket(String(a.target), st.buckets);
-        const task = key ? undefined : wantTask ?? findTask(String(a.target));
+        const { key, task } = resolveTarget(String(a.target), st.buckets, st.tasks.filter((t) => t.status === "open" && !isPianoItem(t)));
         if (!key && !task) return { tone: "warn", text: `I couldn't match “${a.target}” to a task or weekly goal, so nothing was changed.` };
         const fromDate = typeof a.from_date === "string" ? a.from_date : null;
         const source = st.blocks
@@ -776,12 +823,23 @@ export class Engine {
             && (key ? b.kind === "bucket" && b.bucket === key : b.task_id === task!.id))
           .sort((a, b) => a.start.localeCompare(b.start))[0];
         if (!source) return { tone: "warn", text: `I couldn't find a planned ${key ?? task!.title} block${fromDate ? ` on ${fromDate}` : ""} in the calendar, so nothing was changed.` };
+        const fromDay = source.date;
         const ranges: Record<string, [string, string]> = { morning: ["06:00", "12:00"], afternoon: ["12:00", "18:30"], evening: ["18:30", "23:59"] };
         const [ws, we] = ranges[a.window as string] ?? ranges.afternoon;
         const day = parseLocal(`${a.to_date}T00:00`);
-        const busy = st.blocks.filter((b) => b.id !== source.id && b.date === a.to_date && (b.locked || b.status === "done"))
+        // the whole sitting moves: same subject, back to back (only breaks between) on that day
+        const same = (b: Block) => b.status === "planned" && b.date === source.date && (key ? b.kind === "bucket" && b.bucket === key : b.task_id === task!.id);
+        const run: Block[] = [source];
+        for (const b of st.blocks.filter((x) => same(x) && x.start > source.start).sort((x, y) => x.start.localeCompare(y.start))) {
+          const gap = (parseLocal(b.start).getTime() - parseLocal(run[run.length - 1].end).getTime()) / 60000;
+          if (gap < 0 || gap > Math.max(st.rules.break_min, 15) + 10) break;
+          run.push(b);
+        }
+        const ids = new Set(run.map((b) => b.id));
+        const t0 = parseLocal(source.start).getTime();
+        const busy = st.blocks.filter((b) => !ids.has(b.id) && b.date === a.to_date && (b.locked || b.status === "done"))
           .map((b) => [parseLocal(b.start), parseLocal(b.end)] as [Date, Date]);
-        const len = Math.round((parseLocal(source.end).getTime() - parseLocal(source.start).getTime()) / 60000);
+        const len = Math.round((parseLocal(run[run.length - 1].end).getTime() - t0) / 60000);
         const slot = freeIntervals(st.rules, day, st.events, busy, now).find((iv) => {
           const s = Math.max(iv.s.getHours() * 60 + iv.s.getMinutes(), hm(ws));
           const e = Math.min(iv.e.getHours() * 60 + iv.e.getMinutes(), hm(we));
@@ -791,15 +849,21 @@ export class Engine {
         const sMin = Math.max(slot.s.getHours() * 60 + slot.s.getMinutes(), hm(ws));
         const s0 = new Date(day.getTime() + sMin * 60000), e0 = new Date(s0.getTime() + len * 60000);
         let moved = false;
+        void e0;
         this.store.update((s) => {
-          const block = s.blocks.find((b) => b.id === source.id && b.status === "planned");
-          if (!block) return;
-          Object.assign(block, { date: a.to_date, start: fmtLocal(s0), end: fmtLocal(e0), locked: true });
-          moved = true;
-          this.replanInto(s, now);
+          for (const r of run) {
+            const block = s.blocks.find((b) => b.id === r.id && b.status === "planned");
+            if (!block) continue;
+            const off = parseLocal(r.start).getTime() - t0, dur = parseLocal(r.end).getTime() - parseLocal(r.start).getTime();
+            const bs = new Date(s0.getTime() + off);
+            Object.assign(block, { date: a.to_date, start: fmtLocal(bs), end: fmtLocal(new Date(bs.getTime() + dur)), locked: true });
+            moved = true;
+          }
+          if (moved) this.replanInto(s, now);
         });
         if (!moved) return { tone: "warn", text: `That calendar block changed before I could move it; nothing was changed.` };
-        return { tone: "ok", text: `Moved ${source.title} from ${source.date} to ${a.to_date} at ${fmtLocal(s0).slice(11)}.` };
+        const what = run.length > 1 ? `${source.title} (${run.length} blocks, ${hm12(fmtLocal(s0))}–${hm12(fmtLocal(new Date(s0.getTime() + len * 60000)))})` : source.title;
+        return { tone: "ok", text: `Moved ${what} from ${fromDay} to ${a.to_date} at ${hm12(fmtLocal(s0))}.` };
       }
       case "schedule_task": {
         const t = findTask(String(a.task_query));
@@ -819,9 +883,7 @@ export class Engine {
         return { tone: r.ok ? "ok" : "warn", text: r.text };
       }
       case "keep_block": {
-        const wantTask = TASK_WORDS.test(String(a.target)) ? findTask(String(a.target)) : undefined;
-        const key = wantTask ? null : resolveBucket(String(a.target), st.buckets);
-        const task = key ? undefined : wantTask ?? findTask(String(a.target));
+        const { key, task } = resolveTarget(String(a.target), st.buckets, st.tasks.filter((t) => t.status === "open" && !isPianoItem(t)));
         if (!key && !task) return { tone: "warn", text: `I couldn't find “${a.target}” in your plan.` };
         const hit = (b: Block) => b.status === "planned" && (a.date ? b.date === a.date : parseLocal(b.end) > now)
           && (key ? b.bucket === key && b.kind === "bucket" : b.task_id === task!.id);
@@ -839,9 +901,7 @@ export class Engine {
         return { tone: "ok", text: `Kept ${key ?? task!.title}${first ? ` at ${hm12(first.start)} on ${first.date}` : ""}. Everything else can still shift around it.` };
       }
       case "remove_block": {
-        const wantTask = TASK_WORDS.test(String(a.target)) ? findTask(String(a.target)) : undefined;
-        const key = wantTask ? null : resolveBucket(String(a.target), st.buckets);
-        const task = key ? undefined : wantTask ?? findTask(String(a.target));
+        const { key, task } = resolveTarget(String(a.target), st.buckets, st.tasks.filter((t) => t.status === "open" && !isPianoItem(t)));
         if (!key && !task) return { tone: "warn", text: `I couldn't match “${a.target}” to a task or weekly goal, so nothing was removed.` };
         const date = typeof a.date === "string" ? a.date : null;
         const hit = (b: Block) => b.status === "planned" && parseLocal(b.end) > now

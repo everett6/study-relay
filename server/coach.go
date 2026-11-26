@@ -11,12 +11,28 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
 
 // ------------------------------------------------------------------ native high-context local LLM proxy
+
+// openRouterFallbacks lists the pinned model first, then LOCAL_LLM_FALLBACKS (comma-separated),
+// for OpenRouter's "models" fallback field. Only for OpenRouter and a pinned model (not its own router).
+func openRouterFallbacks(baseURL, model, extra string) []string {
+	if !strings.Contains(baseURL, "openrouter.ai") || strings.HasPrefix(model, "openrouter/") || strings.TrimSpace(extra) == "" {
+		return nil
+	}
+	out := []string{model}
+	for _, m := range strings.Split(extra, ",") {
+		if m = strings.TrimSpace(m); m != "" && !slices.Contains(out, m) && len(out) < 3 {
+			out = append(out, m)
+		}
+	}
+	return out
+}
 
 func localLLMConfig(cfg Config) (baseURL, model string, ctxLen int, apiKey string) {
 	baseURL = strings.TrimRight(cfg.LocalLLMURL, "/")
@@ -167,7 +183,8 @@ func (s *Server) localLLMStatusHTTP(w http.ResponseWriter, r *http.Request) {
 			"error": "no API key yet: add it in Settings → Connections"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	// A local model server (Ollama/llama.cpp on a Pi) can take several seconds to answer /models.
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {
@@ -378,6 +395,9 @@ func (s *Server) localLLMChatHTTP(w http.ResponseWriter, r *http.Request) {
 		"temperature": temp,
 		"max_tokens":  maxTok,
 		"stream":      false,
+	}
+	if fb := openRouterFallbacks(baseURL, model, os.Getenv("LOCAL_LLM_FALLBACKS")); len(fb) > 1 {
+		payload["models"] = fb // OpenRouter tries these in order when one is rate-limited or gone
 	}
 	if len(in.ResponseFormat) > 0 {
 		payload["response_format"] = in.ResponseFormat

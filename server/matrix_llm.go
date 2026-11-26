@@ -148,7 +148,23 @@ func estimateTaskViaEndpoint(ctx context.Context, client *http.Client, baseURL, 
 	return &est, nil
 }
 
-// runPiMatrixBatch temporarily spins up llama-server on CPU core 3 (nice 19, ionice idle),
+// piQuantCore is the CPU core the PiQuant service is pinned to. Matrix estimation must never
+// share it, or the two would fight for the same core.
+const piQuantCore = 3
+
+// matrixCore returns the core to pin the ephemeral llama-server to, refusing PiQuant's core.
+func (s *Server) matrixCore() int {
+	core := s.cfg.MatrixLlamaCore
+	if core < 0 || core == piQuantCore {
+		if core == piQuantCore {
+			log.Printf("matrix_llm: MATRIX_LLAMA_CORE=%d is PiQuant's core; using core 0 instead", core)
+		}
+		core = 0
+	}
+	return core
+}
+
+// runPiMatrixBatch temporarily spins up llama-server on a dedicated CPU core (nice 19, ionice idle),
 // refines heuristic-only open tasks using LFM3 GGUF weights, saves to SQLite, and kills the server
 // immediately so 0 MB of weights stay resident and PiQuant is never impacted.
 func (s *Server) runPiMatrixBatch(ctx context.Context) (int, error) {
@@ -177,7 +193,8 @@ func (s *Server) runPiMatrixBatch(ctx context.Context) (int, error) {
 		port = 18089
 	}
 	portStr := strconv.Itoa(port)
-	cmd := exec.CommandContext(bCtx, "ionice", "-c", "3", "nice", "-n", "19", "taskset", "-c", "0",
+	coreStr := strconv.Itoa(s.matrixCore())
+	cmd := exec.CommandContext(bCtx, "ionice", "-c", "3", "nice", "-n", "19", "taskset", "-c", coreStr,
 		s.cfg.MatrixLlamaBin, "-m", s.cfg.MatrixGGUFPath,
 		"--host", "127.0.0.1", "--port", portStr,
 		"-c", "1024", "-t", "1", "-tb", "1", "-np", "1", "--no-warmup", "--log-disable")
@@ -254,7 +271,7 @@ func (s *Server) runPiMatrixBatch(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	log.Printf("matrix_llm: refined %d/%d tasks on Pi core 3 and unloaded weights", len(results), len(todo))
+	log.Printf("matrix_llm: refined %d/%d tasks on Pi core %d and unloaded weights", len(results), len(todo), s.matrixCore())
 	return len(results), nil
 }
 
@@ -267,7 +284,7 @@ func (s *Server) triggerPiMatrixAsync() {
 	}()
 }
 
-// idleUnloadLoop ensures any warm Core-0 llama-server unloads after 3 minutes of inactivity.
+// idleUnloadLoop ensures any warm matrix llama-server unloads after 3 minutes of inactivity.
 func (s *Server) idleUnloadLoop(ctx context.Context) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
@@ -285,7 +302,7 @@ func (s *Server) idleUnloadLoop(ctx context.Context) {
 	}
 }
 
-// hourlyBatchLoop runs once per hour to score any un-estimated open tasks on Core 0 and unload.
+// hourlyBatchLoop runs once per hour to score any un-estimated open tasks and unload.
 func (s *Server) hourlyBatchLoop(ctx context.Context) {
 	if s.cfg.MatrixLlamaBin == "" || s.cfg.MatrixGGUFPath == "" {
 		return

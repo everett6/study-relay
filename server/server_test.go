@@ -935,6 +935,16 @@ func TestPiMatrixEstimatorParsesDirectionsAndComments(t *testing.T) {
 	}
 }
 
+// PiQuant runs on core 3; matrix estimation must never be pinned to the same core.
+func TestMatrixLlamaCoreNeverUsesPiQuantCore(t *testing.T) {
+	for _, tc := range []struct{ cfg, want int }{{0, 0}, {1, 1}, {2, 2}, {3, 0}, {-1, 0}} {
+		s, _, _ := newTestServer(t, Config{MatrixLlamaCore: tc.cfg})
+		if got := s.matrixCore(); got != tc.want {
+			t.Errorf("MatrixLlamaCore=%d -> core %d, want %d", tc.cfg, got, tc.want)
+		}
+	}
+}
+
 func TestSchoolHolidaysOpenFullDay(t *testing.T) {
 	r := DefaultState().Rules
 	la, _ := time.LoadLocation("America/Los_Angeles")

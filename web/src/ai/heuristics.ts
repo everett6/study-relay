@@ -93,7 +93,7 @@ export function applyEstimate(t: Task, e: Estimate, blockMin = 45, minBlock = 20
 // ------------------------------------------------------------------ commands
 export type ToolName = "add_event" | "preclear_task" | "cancel_study" | "set_bucket_target" | "move_block"
   | "set_estimate" | "set_load" | "mark_done" | "ask_canvas" | "timer" | "draft_email" | "check_in" | "keep_block"
-  | "schedule_task" | "order_blocks" | "set_grade_target" | "set_schedule" | "add_task" | "remove_block"
+  | "schedule_task" | "order_blocks" | "set_grade_target" | "set_schedule" | "set_goal_days" | "days_off" | "add_task" | "remove_block"
   | "add_exam" | "set_weekly_focus" | "clear_day" | "set_priority" | "explain_plan";
 export interface ToolCall { tool: ToolName; args: Record<string, unknown> }
 
@@ -107,6 +107,8 @@ export const TOOL_SPECS: Record<ToolName, string> = {
   order_blocks: "first:string, then:string, date:YYYY-MM-DD|null — reorder two blocks on a day so `first` comes before `then` (\"chem before calc tonight\")",
   set_grade_target: "course:string, target:number(percent)|null — the grade the student wants in a class; the planner gives below-goal classes more time and weekly review (\"I want an A in chem\", \"get precalc to 95\")",
   set_schedule: "one or more of school_days:number[] (1=Mon..7=Sun), school_start:HH:MM, school_end:HH:MM, school_end_by_day:object{weekday:HH:MM}, commute_min:number, after_school_min:number, dinner_start:HH:MM, dinner_min:number, sleep_cutoff:HH:MM, weekend_start:HH:MM, block_min:number, break_min:number, min_block_min:number, preclear_hours:number, event_prep_min:number, rest_days:number[], quiet_weekday:string[], quiet_weekend:string[], quiet_by_day:object{weekday:string[]} — change only explicitly requested settings; preserve the rest and re-plan",
+  days_off: "dates:YYYY-MM-DD[], away:boolean, title:string|null — one-off days with NO SCHOOL (\"no school today\", \"no school this week\", sick day, break); away=true also keeps those days free of study (trip: \"skiing Thu-Sat\"). Never use set_schedule school_days for a one-off day",
+  set_goal_days: "bucket:AIME|USAAIO|RESEARCH|ACT|PHYSICS|SELF, days:number[] (1=Mon..7=Sun; [] = any day) — which weekdays a weekly goal may be studied (\"AIME on weekends only\" -> [6,7], \"no ACT on school nights\")",
   add_task: "title:string, due_date:YYYY-MM-DD, description:string|null, estimated_minutes:int|null, course:string|null — save a dated milestone; use College Planning for college milestones",
   keep_block: "target:string (bucket key or task words), date:YYYY-MM-DD|null — pin it where it is so re-planning never moves it (\"keep\", \"don't move\", \"leave\")",
   remove_block: "target:string (bucket key or task words), date:YYYY-MM-DD|null — delete ONE specific study block from the calendar (\"remove my AIME block\", \"drop the research session tonight\"); the rest re-plans around it",
@@ -143,12 +145,41 @@ const MINUTE_SETTINGS = {
 } as const;
 
 /** Validate a partial routine update without changing any settings the user left out. */
+const DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+/** 1=Mon..7=Sun from a number, "3", "Wed", "wednesday", "Weds", "Thurs"…; null if it isn't a weekday. */
+export function dayNum(v: unknown): number | null {
+  if (typeof v === "number") return Number.isInteger(v) && v >= 1 && v <= 7 ? v : null;
+  if (typeof v !== "string") return null;
+  const t = v.trim().toLowerCase();
+  if (/^[1-7]$/.test(t)) return Number(t);
+  const i = DAY_NAMES.findIndex((d) => t.startsWith(d) || (d === "thu" && /^th(u|ur|urs)?$/.test(t)) || (d === "tue" && t === "tues"));
+  return i >= 0 && /^[a-z]+$/.test(t) && t.length <= 9 ? i + 1 : null;
+}
+/** Weekday lists and weekday-keyed objects in model output -> ISO numbers ("Mon" -> 1, "Sunday" -> 7). */
+export function normalizeDays(args: Record<string, unknown>, listKeys: string[], objectKeys: string[]): void {
+  for (const k of listKeys) if (Array.isArray(args[k])) {
+    const nums = (args[k] as unknown[]).map(dayNum);
+    if (nums.every((n) => n !== null)) args[k] = [...new Set(nums as number[])];
+  }
+  for (const k of objectKeys) {
+    const o = args[k];
+    if (typeof o !== "object" || o === null || Array.isArray(o)) continue;
+    const out: Record<string, unknown> = {};
+    for (const [day, val] of Object.entries(o)) {
+      const n = dayNum(day);
+      if (n === null) return; // leave it for the validator to reject
+      out[String(n)] = val;
+    }
+    args[k] = out;
+  }
+}
+
 export function validateSchedulePatch(value: unknown): SchedulePatch | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const input = value as Record<string, unknown>;
   const allowed = new Set<string>([
     ...TIME_SETTINGS, ...Object.keys(MINUTE_SETTINGS), "school_days", "rest_days",
-    "school_end_by_day\", \"quiet_weekday\", \"quiet_weekend\", \"quiet_by_day",
+    "school_end_by_day", "quiet_weekday", "quiet_weekend", "quiet_by_day",
   ]);
   if (!Object.keys(input).length || Object.keys(input).some((key) => !allowed.has(key))) return null;
   const patch: SchedulePatch = {};
@@ -387,6 +418,21 @@ export function parseScheduleEdit(text: string, now: Date, buckets: Pick<Bucket,
 /** Words that mean an assignment, not a weekly goal ("the physics lab" is a task, "physics" is a goal). */
 export const TASK_WORDS = /\b(lab|homework|hw|reading|essay|quiz|test|exam|problem set|pset|project|assignment|worksheet|draft|annotations?|report)\b/i;
 
+/** What a block target names: a weekly goal or an assignment. A goal word inside a longer task title
+ *  ("Email teacher re: True Self…") doesn't make it the Self goal: the goal wins only when the target
+ *  is short or starts with the goal's name. */
+export function resolveTarget<T extends Pick<Task, "course" | "title" | "category" | "status">>(
+  q: string, buckets: Pick<Bucket, "key" | "name">[], tasks: T[]): { key: string | null; task: T | undefined } {
+  const task = matchTasks(q, tasks)[0];
+  const key = resolveBucket(q, buckets);
+  if (!key || !task) return { key, task: key ? undefined : task };
+  if (TASK_WORDS.test(q)) return { key: null, task };
+  const t = q.toLowerCase().trim();
+  const name = buckets.find((b) => b.key === key)?.name.toLowerCase() ?? "";
+  const lead = [key.toLowerCase(), name, ...(BUCKET_ALIASES[key] ?? [])].some((n) => n && t.startsWith(n));
+  return tokens(q).size <= 3 || lead ? { key, task: undefined } : { key: null, task };
+}
+
 export function ruleParse(text: string, now: Date, buckets: Pick<Bucket, "key" | "name">[]): ToolCall[] {
   // First try enhanced schedule editing patterns
   const scheduleCalls = parseScheduleEdit(text, now, buckets);
@@ -562,7 +608,11 @@ export function validateCalls(raw: unknown): ToolCall[] {
   if (!Array.isArray(list)) return [];
   const out: ToolCall[] = [];
   const isDate = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
-  const isTime = (v: unknown) => typeof v === "string" && /^\d{2}:\d{2}$/.test(v);
+  const isTime = (v: unknown) => {
+    if (typeof v !== "string") return false;
+    const m = v.match(/^(\d{2}):(\d{2})$/);
+    return !!m && Number(m[1]) <= 23 && Number(m[2]) <= 59;
+  };
   const normTime = (v: unknown) => {
     if (typeof v !== "string") return v;
     const m = v.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
@@ -582,8 +632,18 @@ export function validateCalls(raw: unknown): ToolCall[] {
     args = { ...args };
     if (tool === "ask_canvas" && args.what == null) args.what = args.ask ?? args.ask_type ?? args.type;
     for (const k of ["start", "end", "before", "after"]) if (args[k] != null) args[k] = normTime(args[k]);
+    if (tool === "set_goal_days") normalizeDays(args, ["days"], []);
     if (tool === "set_schedule") {
       for (const k of TIME_SETTINGS) if (args[k] != null) args[k] = normTime(args[k]);
+      // "quiet_weekend": ["Sunday"] means "no study on Sunday": that is a rest day, not a time window
+      for (const k of ["quiet_weekday", "quiet_weekend"]) {
+        const v = args[k];
+        if (Array.isArray(v) && v.length && v.every((x) => dayNum(x) !== null)) {
+          args.rest_days = [...new Set([...(Array.isArray(args.rest_days) ? args.rest_days : []), ...v])];
+          delete args[k];
+        }
+      }
+      normalizeDays(args, ["school_days", "rest_days"], ["school_end_by_day", "quiet_by_day"]);
       if (typeof args.school_end_by_day === "object" && args.school_end_by_day !== null && !Array.isArray(args.school_end_by_day)) {
         const overrides: Record<string, unknown> = {};
         for (const [day, time] of Object.entries(args.school_end_by_day)) overrides[day] = normTime(time);
@@ -591,7 +651,7 @@ export function validateCalls(raw: unknown): ToolCall[] {
       }
     }
     const ok = {
-      add_event: () => typeof args.title === "string" && isDate(args.date) && isTime(args.start),
+      add_event: () => typeof args.title === "string" && isDate(args.date) && isTime(args.start) && (args.end == null || args.end === "" || isTime(args.end)),
       preclear_task: () => typeof args.task_query === "string" && isDate(args.date) && isTime(args.before),
       cancel_study: () => isDate(args.date) && (args.after == null || isTime(args.after)),
       set_bucket_target: () => typeof args.bucket === "string" && Number.isFinite(Number(args.hours)) && Number(args.hours) >= 0 && Number(args.hours) <= 40,
@@ -620,6 +680,9 @@ export function validateCalls(raw: unknown): ToolCall[] {
       schedule_task: () => typeof args.task_query === "string" && isDate(args.date),
       order_blocks: () => typeof args.first === "string" && typeof args.then === "string" && args.first !== args.then && (args.date == null || isDate(args.date)),
       set_schedule: () => validateSchedulePatch(args) !== null,
+      days_off: () => Array.isArray(args.dates) && args.dates.length > 0 && args.dates.length <= 21 && args.dates.every(isDate),
+      set_goal_days: () => typeof args.bucket === "string" && Array.isArray(args.days) && args.days.length <= 7 &&
+        args.days.every((d) => Number.isInteger(d) && (d as number) >= 1 && (d as number) <= 7),
       add_task: () => typeof args.title === "string" && args.title.trim().length > 0 && args.title.length <= 160
         && isDate(args.due_date)
         && (args.description == null || (typeof args.description === "string" && args.description.length <= 500))

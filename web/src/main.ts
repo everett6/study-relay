@@ -1,7 +1,7 @@
 import "./styles.css";
 import type { Block, InboxItem, State, Task } from "./core/types";
 import { SCHOOL } from "./core/types";
-import { addDays, fmtDate, fmtLocal, hm12, parseLocal, startOfDay } from "./core/time";
+import { addDays, fmtDate, fmtLocal, hm12, minutesBetween, parseLocal, startOfDay } from "./core/time";
 import { fixedSpans, REVIEW } from "./core/schedule";
 import { DEFAULT_TARGET, subjectFocus, type FocusLevel } from "./core/grades";
 import { Store, api, httpTransport } from "./core/store";
@@ -51,7 +51,7 @@ app.append(
         k === "inbox" ? h("b", { class: "badge", id: "inbox-badge" }) : null))),
   h("main", { id: "view", tabindex: "-1" }),
   h("div", { class: "dock" },
-    h("div", { id: "thinking-box", hidden: true }),
+    h("div", { id: "thinking-box", hidden: true, role: "status", "aria-live": "polite" }),
     h("form", { class: "ask", onsubmit: (e: Event) => { e.preventDefault(); void ask(); } },
       h("button", { type: "button", class: "icon-btn", "aria-label": "Add a screenshot", title: "Screenshot (or paste one anywhere)", onclick: pickImage }, svg(ICON.camera)),
       h("input", { id: "ask", placeholder: "Ask or tell me anything… “banquet at 7 tonight”", autocomplete: "off", "aria-label": "Message" }),
@@ -363,8 +363,19 @@ function openBlock(b: Block) {
 }
 
 // ------------------------------------------------------------------ Week (drag and drop)
-const DAY_START = 7 * 60, DAY_END = 23 * 60, PX = 0.75;
+const DAY_START = 8 * 60, DAY_END = 23 * 60, PX = 1;
 let selectedWeekDay = "";
+/** Back-to-back blocks of the same subject (only a break between them) drawn as one card. */
+function weekRuns(blocks: Block[], breakMin: number): Block[][] {
+  const runs: Block[][] = [];
+  for (const b of [...blocks].sort((x, y) => x.start.localeCompare(y.start))) {
+    const prev = runs[runs.length - 1]?.at(-1);
+    const gap = prev ? minutesBetween(parseLocal(prev.end), parseLocal(b.start)) : Infinity;
+    if (prev && shortTitle(prev, true) === shortTitle(b, true) && gap >= 0 && gap <= Math.max(breakMin, 15) + 5) runs[runs.length - 1].push(b);
+    else runs.push([b]);
+  }
+  return runs;
+}
 function Week(s: State) {
   const t = now();
   const days = Array.from({ length: 7 }, (_, i) => addDays(startOfDay(t), i));
@@ -445,11 +456,20 @@ function Week(s: State) {
               const label = f.kind === "school" || f.kind === "event" ? fixedLabel(f.kind, f.title).filter((x) => typeof x === "string") : "";
               return z > a ? h("div", { class: `span ${f.kind}`, title: f.title, style: `top:${(a - DAY_START) * PX}px;height:${(z - a) * PX}px` }, z - a > 40 ? label : "") : null;
             }),
-            ...s.blocks.filter((b) => b.date === key && b.status !== "missed").map((b) => {
+            ...weekRuns(s.blocks.filter((b) => b.date === key && b.status !== "missed"), s.rules.break_min).map((run) => {
+              const b = run[0], last = run[run.length - 1];
               const st = parseLocal(b.start), a = st.getHours() * 60 + st.getMinutes();
-              const el = h("div", { class: `wblk ${color(b)} ${b.status}`, draggable: b.status === "planned" ? "true" : "false", "data-id": b.id,
-                style: `top:${(a - DAY_START) * PX}px;height:${Math.max(18, mins(b) * PX - 2)}px`, title: `${b.title} · ${hm12(b.start)}`,
-                onclick: () => openBlock(b) }, h("b", null, shortTitle(b, true)), mins(b) >= 40 ? h("small", null, `${mins(b)} min`) : null);
+              const span = minutesBetween(st, parseLocal(last.end));
+              const study = run.reduce((sum, x) => sum + mins(x), 0);
+              const allDone = run.every((x) => x.status === "done");
+              const tip = `${b.title} · ${hm12(b.start)}–${hm12(last.end)}${run.length > 1 ? ` · ${run.length} blocks with breaks` : ""}`;
+              const el = h("div", { class: `wblk ${color(b)} ${allDone ? "done" : "planned"} ${run.length > 1 ? "run" : ""}`,
+                draggable: b.status === "planned" ? "true" : "false", "data-id": b.id,
+                style: `top:${(a - DAY_START) * PX}px;height:${Math.max(22, span * PX - 3)}px`, title: tip,
+                onclick: () => openBlock(b) },
+                h("b", null, shortTitle(b, true)),
+                span >= 35 ? h("small", null, `${hm12(b.start)} · ${fmtMins(study)}${run.length > 1 ? ` · ${run.length}×` : ""}`) : null,
+                ...(run.length > 1 ? run.slice(1).map((x) => h("i", { class: "wblk-cut", style: `top:${minutesBetween(st, parseLocal(x.start)) * PX - 2}px` })) : []));
               el.addEventListener("dragstart", (e) => { e.dataTransfer!.setData("text/plain", b.id); e.dataTransfer!.effectAllowed = "move"; el.classList.add("dragging"); });
               el.addEventListener("dragend", () => el.classList.remove("dragging"));
               return el;
@@ -1072,6 +1092,11 @@ async function ask(textIn?: string, speak = false): Promise<Reply[]> {
     if (speak) for (const r of replies) await voice.speak(r.text);
     if (replies.some((r) => /^Nice, .* is done/.test(r.text))) confetti();
     return replies;
+  } catch (e) {
+    // Never leave the dock stuck on "Thinking with X…" when the turn throws.
+    if (thinkBox) { thinkBox.hidden = true; thinkBox.replaceChildren(); }
+    toast(`Something went wrong: ${(e as Error).message ?? e}`, "warn");
+    return [];
   } finally { dock.classList.remove("thinking"); }
 }
 
@@ -1483,7 +1508,7 @@ function openSettings() {
   const close = sheet("Settings", h("div", { class: "stack" },
     h("h3", null, "Weekly goals"), ...targets.map((t) => t.row),
     h("h3", null, "Your day & preferences"),
-    h("p", { class: "muted small" }, `School ${clockLabel(r.school_start)}–${clockLabel(r.school_end)} on weekdays · ${r.after_school_min}-min break after school · dinner ${clockLabel(r.dinner_start)} (${r.dinner_min} min) · lights out ${clockLabel(r.sleep_cutoff)} (never moved)`),
+    h("p", { class: "muted small" }, `School ${clockLabel(r.school_start)}–${clockLabel(r.school_end)} on weekdays${Object.entries(r.school_end_by_day ?? {}).length ? ` (out ${Object.entries(r.school_end_by_day ?? {}).map(([d, t]) => `${clockLabel(t)} ${["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][+d]}`).join(", ")})` : ""} · ${r.after_school_min}-min break after school · dinner ${clockLabel(r.dinner_start)} (${r.dinner_min} min) · lights out ${clockLabel(r.sleep_cutoff)} (never moved)`),
     h("label", null, "Commute after school (minutes)", commute),
     h("div", null, h("span", { class: "small muted" }, "Days kept completely free of study"), restRow),
     h("div", { class: "row" },

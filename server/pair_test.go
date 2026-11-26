@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -64,5 +65,17 @@ func TestIsCloudLLM(t *testing.T) {
 		if got := isCloudLLM(u); got != want {
 			t.Errorf("isCloudLLM(%q) = %v", u, got)
 		}
+	}
+}
+
+func TestOpenRouterFallbacks(t *testing.T) {
+	or := "https://openrouter.ai/api/v1"
+	got := openRouterFallbacks(or, "baidu/ernie:free", " nvidia/ultra:free, baidu/ernie:free ,x/y:free,z/w:free")
+	if want := []string{"baidu/ernie:free", "nvidia/ultra:free", "x/y:free"}; !slices.Equal(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	if openRouterFallbacks(or, "openrouter/free", "a/b") != nil || openRouterFallbacks("http://127.0.0.1:11434/v1", "m", "a/b") != nil ||
+		openRouterFallbacks(or, "m", "") != nil {
+		t.Fatal("fallbacks only for a pinned OpenRouter model with a list")
 	}
 }
